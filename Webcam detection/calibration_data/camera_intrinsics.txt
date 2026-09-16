@@ -3,14 +3,14 @@ CAMERA INTRINSIC CALIBRATION REPORT
 
 Calibration Model: OpenCV Fisheye
 Calibration File:  C:\Users\hamid\Documents\GitHub\eEoodX\Webcam detection\calibration_data\camera_intrinsics.npz
-Accepted Photos:   8
+Accepted Photos:   15
 Image Resolution:  3840 x 2160
-RMS Error:         0.233484 px
+RMS Error:         0.347983 px
 
 Camera Matrix (K):
-[[2.80010854e+03 0.00000000e+00 1.95175002e+03]
- [0.00000000e+00 2.80033180e+03 1.19569537e+03]
+[[3.12550807e+03 0.00000000e+00 1.95915006e+03]
+ [0.00000000e+00 3.12541664e+03 1.23392723e+03]
  [0.00000000e+00 0.00000000e+00 1.00000000e+00]]
 
 Distortion Coefficients (D):
-[0.28623417 0.23660179 0.57929973 2.88532961]
+[  0.28520552  -0.15290691   4.9371759  -15.11781473]

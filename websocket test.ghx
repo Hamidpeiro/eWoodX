@@ -103,7 +103,7 @@
               <chunks count="1">
                 <chunk name="Container">
                   <items count="14">
-                    <item name="Description" type_name="gh_string" type_code="10">Scripting component</item>
+                    <item name="Description" type_name="gh_string" type_code="10"></item>
                     <item name="GraftStandardOutputLines" type_name="gh_bool" type_code="1">true</item>
                     <item name="InstanceGuid" type_name="gh_guid" type_code="9">2b18b475-bcdb-4850-b43b-89b72906ea3c</item>
                     <item name="MarshGuids" type_name="gh_bool" type_code="1">true</item>
@@ -296,8 +296,8 @@
                       <chunks count="1">
                         <chunk name="LanguageSpec">
                           <items count="2">
-                            <item name="Taxon" type_name="gh_string" type_code="10">mcneel.pythonnet.python</item>
-                            <item name="Version" type_name="gh_string" type_code="10">3.9.10</item>
+                            <item name="Taxon" type_name="gh_string" type_code="10">*.*.python</item>
+                            <item name="Version" type_name="gh_string" type_code="10">3.*</item>
                           </items>
                         </chunk>
                       </chunks>
@@ -305,10 +305,10 @@
                     <chunk name="ScriptEditor">
                       <items count="1">
                         <item name="StartBounds" type_name="gh_drawing_rectangle" type_code="34">
-                          <X>847</X>
+                          <X>166</X>
                           <Y>0</Y>
                           <W>850</W>
-                          <H>968</H>
+                          <H>1018</H>
                         </item>
                       </items>
                     </chunk>

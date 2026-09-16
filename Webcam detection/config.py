@@ -43,11 +43,11 @@ CAMERA_FOURCC = "MJPG"
 #   CAMERA_FOCUS_MODE: "manual" or "auto"
 #   CAMERA_FOCUS_VALUE: Integer value (0 to 1023, e.g. 350, 450, 500)
 CAMERA_FOCUS_MODE = "manual"
-CAMERA_FOCUS_VALUE = 390
+CAMERA_FOCUS_VALUE = 380
 
 # Zoom control:
 #   Float zoom multiplier: 1.0 = full wide-angle (no zoom), 1.5 = 1.5x zoom, 2.0 = 2.0x zoom
-CAMERA_ZOOM = 1.80
+CAMERA_ZOOM = 2.00
 
 # Exposure & Light controls:
 #   CAMERA_EXPOSURE_MODE: "auto" or "manual"
@@ -56,8 +56,8 @@ CAMERA_EXPOSURE_MODE = "auto"
 CAMERA_EXPOSURE_VALUE = -5
 
 # Image adjustments:
-CAMERA_BRIGHTNESS = 24
-CAMERA_CONTRAST = 30
+CAMERA_BRIGHTNESS = 4
+CAMERA_CONTRAST = 24
 CAMERA_SATURATION = 32      # 1 - 64 (default 32)
 CAMERA_SHARPNESS = 32       # 1 - 64 (default 32)
 CAMERA_GAIN = 0             # 0 - 15 (default 0)
@@ -108,9 +108,9 @@ ARUCO_MARKER_SIZE_MM = 100.0  # physical printed size of each marker's black squ
 # - (+X, +Y) at Top-Right (Marker 3)
 MARKER_WORLD_POSITIONS_MM = {
     1: (0.0, 0.0),        # bottom-left (Origin)
-    0: (776.0, 0.0),      # bottom-right (+X)
-    2: (0.0, 440.0),      # top-left (+Y)
-    3: (776.0, 440.0),    # top-right (+X, +Y)
+    0: (1780.0, 0.0),      # bottom-right (+X)
+    2: (0.0, 1040.0),      # top-left (+Y)
+    3: (1780.0, 1040.0),    # top-right (+X, +Y)
 }
 
 # ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ MARKER_WORLD_POSITIONS_MM = {
 # ---------------------------------------------------------------------------
 # Height from camera lens to table surface in mm.
 # Update this value if you adjust camera mounting height.
-CAMERA_HEIGHT_MM = 1620.0
+CAMERA_HEIGHT_MM = 2430.0
 
 # Timber thickness in mm (set to 0.0 to measure directly on table plane without requiring thickness input)
 TIMBER_THICKNESS_MM = 0.0
