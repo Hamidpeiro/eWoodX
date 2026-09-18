@@ -1,3 +1,15 @@
-opencv-contrib-python
-numpy
-rhino3dm
+# ============================================================
+# eWoodX - Python Dependencies
+# ============================================================
+
+# OpenCV with ArUco marker detection & camera controls
+opencv-contrib-python>=4.7.0.72
+
+# Numerical matrix operations and homography math
+numpy>=1.22.0
+
+# Direct UVC hardware camera control (exposure, focus, white balance on Windows)
+duvc-ctl>=0.1.2
+
+# Native Rhino 3DM CAD geometry serialization (for Rhino/Grasshopper export)
+rhino3dm>=7.14.0

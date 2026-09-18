@@ -1,0 +1,1 @@
+# Obsolete Prototype Scripts\nThese scripts were early experiments for projector calibration and are kept for reference only. They are not used in the current workflow.

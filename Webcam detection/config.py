@@ -56,8 +56,8 @@ CAMERA_EXPOSURE_MODE = "auto"
 CAMERA_EXPOSURE_VALUE = -5
 
 # Image adjustments:
-CAMERA_BRIGHTNESS = 4
-CAMERA_CONTRAST = 24
+CAMERA_BRIGHTNESS = 11
+CAMERA_CONTRAST = 26
 CAMERA_SATURATION = 32      # 1 - 64 (default 32)
 CAMERA_SHARPNESS = 32       # 1 - 64 (default 32)
 CAMERA_GAIN = 0             # 0 - 15 (default 0)
@@ -106,11 +106,15 @@ ARUCO_MARKER_SIZE_MM = 100.0  # physical printed size of each marker's black squ
 # - +X axis along table length towards Bottom-Right (Marker 0)
 # - +Y axis along table width towards Top-Left (Marker 2)
 # - (+X, +Y) at Top-Right (Marker 3)
+# Table workspace physical dimensions in mm
+TABLE_WIDTH_MM = 1780.0
+TABLE_HEIGHT_MM = 1040.0
+
 MARKER_WORLD_POSITIONS_MM = {
-    1: (0.0, 0.0),        # bottom-left (Origin)
-    0: (1780.0, 0.0),      # bottom-right (+X)
-    2: (0.0, 1040.0),      # top-left (+Y)
-    3: (1780.0, 1040.0),    # top-right (+X, +Y)
+    1: (0.0, 0.0),                            # bottom-left (Origin)
+    0: (TABLE_WIDTH_MM, 0.0),                 # bottom-right (+X)
+    2: (0.0, TABLE_HEIGHT_MM),                # top-left (+Y)
+    3: (TABLE_WIDTH_MM, TABLE_HEIGHT_MM),     # top-right (+X, +Y)
 }
 
 # ---------------------------------------------------------------------------
@@ -120,8 +124,7 @@ MARKER_WORLD_POSITIONS_MM = {
 # Update this value if you adjust camera mounting height.
 CAMERA_HEIGHT_MM = 2430.0
 
-# Timber thickness in mm (set to 0.0 to measure directly on table plane without requiring thickness input)
-TIMBER_THICKNESS_MM = 0.0
+
 
 # ---------------------------------------------------------------------------
 # Segmentation (board vs background)
@@ -142,8 +145,60 @@ MIN_BOARD_CONTOUR_AREA_PX = 5000  # ignore small noise blobs after thresholding
 CONTOUR_APPROX_FACTOR = 0.004
 
 # ---------------------------------------------------------------------------
-# Color reference chart (optional but recommended)
+# Projector 3D Mounting & Height (Thickness / Parallax Compensation)
 # ---------------------------------------------------------------------------
-# If you place a color checker in frame, set this True and fill in the pixel
-# ROI of one known-reference patch once you know where it sits in your shots.
-USE_COLOR_CHART_CORRECTION = False
+# Height from projector lens to table surface in mm (235 cm = 2350 mm)
+PROJECTOR_HEIGHT_MM = 2300.0
+
+# -------------------------------------------------
+# Projector display settings (pixels) – can be overridden via CLI or environment
+PROJECTOR_WIDTH = 1280
+PROJECTOR_HEIGHT = 800
+PROJECTOR_SCREEN_ORIGIN_X = 2560
+PROJECTOR_SCREEN_ORIGIN_Y = 0
+# Environment-specific overrides
+import os
+_EWOODX_ENV = os.getenv('EWOODX_ENV', 'development')
+if _EWOODX_ENV == 'development':
+    # Development defaults
+    PROJECTOR_WIDTH = 1280
+    PROJECTOR_HEIGHT = 800
+elif _EWOODX_ENV == 'production':
+    # Production defaults (example values)
+    PROJECTOR_WIDTH = 1920
+    PROJECTOR_HEIGHT = 1080
+# CLI overrides
+def _override_from_cli():
+    import argparse
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--proj_width', type=int)
+    parser.add_argument('--proj_height', type=int)
+    parser.add_argument('--proj_x', type=int)
+    parser.add_argument('--proj_y', type=int)
+    args, unknown = parser.parse_known_args()
+    if args.proj_width is not None:
+        globals()['PROJECTOR_WIDTH'] = args.proj_width
+    if args.proj_height is not None:
+        globals()['PROJECTOR_HEIGHT'] = args.proj_height
+    if args.proj_x is not None:
+        globals()['PROJECTOR_SCREEN_ORIGIN_X'] = args.proj_x
+    if args.proj_y is not None:
+        globals()['PROJECTOR_SCREEN_ORIGIN_Y'] = args.proj_y
+_override_from_cli()
+# Clean up helper
+if '_override_from_cli' in globals():
+    del _override_from_cli
+
+# 3D Position of projector lens relative to table Origin (Marker 1 at 0,0) in mm
+PROJECTOR_POS_X_MM = 920.0
+PROJECTOR_POS_Y_MM = 50.0
+
+# ---------------------------------------------------------------------------
+# Projector Fine-Tuning Offsets (in real-world mm)
+# ---------------------------------------------------------------------------
+# Base fine adjustments at table level (Z=0)
+PROJECTOR_OFFSET_X_MM = 0.0
+PROJECTOR_OFFSET_Y_MM = 0.0
+
+# Timber thickness in mm (default starting thickness for measurements and projection)
+TIMBER_THICKNESS_MM = 0.0

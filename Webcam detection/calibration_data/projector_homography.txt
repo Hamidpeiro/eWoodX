@@ -1,0 +1,13 @@
+eWoodX DIRECT 4-CORNER PROJECTOR CALIBRATION
+=======================================================
+
+World -> Projector Homography:
+[[ 7.1970658256e-01  1.9912726501e-03 -1.4347195625e+00]
+ [-6.0116315313e-04 -7.6587214338e-01  7.9802246094e+02]
+ [ 5.8605633402e-08  1.7424886030e-06  1.0000000000e+00]]
+
+Aligned Points:
+Marker 1: World=(0.0, 0.0) mm  ->  Projector=(-1.43, 798.02) px
+Marker 0: World=(1780.0, 0.0) mm  ->  Projector=(1279.51, 796.87) px
+Marker 2: World=(0.0, 1040.0) mm  ->  Projector=(0.64, 1.51) px
+Marker 3: World=(1780.0, 1040.0) mm  ->  Projector=(1279.26, 0.44) px
