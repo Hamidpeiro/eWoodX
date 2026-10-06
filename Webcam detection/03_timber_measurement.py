@@ -250,19 +250,23 @@ def segment_board(img, workspace_outer_px, markers_dict=None, verbose=True):
         return None, timber_mask, None
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    score, best_contour, area, aspect_ratio, solidity = candidates[0]
+    detected_timbers = []
 
-    if verbose:
-        print(f"\nTimber candidate:")
-        print(f"  Area:         {area:.0f} px")
-        print(f"  Aspect ratio: {aspect_ratio:.2f}")
-        print(f"  Solidity:     {solidity:.3f}")
-        print(f"  Score:        {score:.0f}")
+    for score, contour, area, aspect_ratio, solidity in candidates:
 
-    # Extract tightly fitted bounding box matching the exact yellow contour
-    timber_corners_px = get_contour_oriented_box(best_contour)
+        timber_corners_px = get_contour_oriented_box(contour)
 
-    return best_contour, timber_mask, timber_corners_px
+        detected_timbers.append({
+            
+            "contour": contour,
+            "corners_px": timber_corners_px,
+            "area": area,
+            "aspect_ratio": aspect_ratio,
+            "solidity": solidity,
+            "score": score
+        })
+
+    return detected_timbers, timber_mask
 
 
 # ============================================================
@@ -395,15 +399,29 @@ def sample_timber_color(img_bgr, contour):
 
 
 # ============================================================
-# MEASURE ONE TIMBER
+# ============================================================
+# MEASURE MULTIPLE TIMBERS
 # ============================================================
 
 def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
+
     print("\n" + "=" * 60)
-    print(f"MEASURING TIMBER {timber_number:02d}  (thickness: {timber_thickness_mm:.1f} mm)")
+    print(
+        f"MEASURING CAPTURE {timber_number:02d} "
+        f"(thickness: {timber_thickness_mm:.1f} mm)"
+    )
     print("=" * 60)
 
+    # --------------------------------------------------------
+    # 1. UNDISTORT IMAGE
+    # --------------------------------------------------------
+
     img_undist = undistort(img)
+
+
+    # --------------------------------------------------------
+    # 2. DETECT ARUCO + CALCULATE HOMOGRAPHY
+    # --------------------------------------------------------
 
     (
         H,
@@ -418,324 +436,1442 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
         return False
 
     max_err = float(errors_mm.max())
-    print(f"\nLive homography OK. Maximum marker error: {max_err:.2f} mm")
-    if max_err > 2.0:
-        print(f"WARNING: marker error is high ({max_err:.2f} mm).")
 
-    # Physical workspace order: TL (2) -> TR (3) -> BR (0) -> BL (1)
-    workspace_outer_px = order_quad(
-        np.array([detected_outer[m] for m in [0, 1, 2, 3]], dtype=np.float32)
+    print(
+        f"\nLive homography OK. "
+        f"Maximum marker error: {max_err:.2f} mm"
     )
 
-    contour, mask, timber_corners_px = segment_board(
+    if max_err > 2.0:
+        print(
+            f"WARNING: marker error is high "
+            f"({max_err:.2f} mm)."
+        )
+
+
+    # --------------------------------------------------------
+    # 3. DEFINE WORKSPACE
+    # --------------------------------------------------------
+
+    workspace_outer_px = order_quad(
+        np.array(
+            [
+                detected_outer[m]
+                for m in [0, 1, 2, 3]
+            ],
+            dtype=np.float32
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # 4. DETECT ALL TIMBERS
+    # --------------------------------------------------------
+
+    detected_timbers, mask = segment_board(
         img_undist,
         workspace_outer_px,
         detected_all
     )
 
-    base_name = f"timber_{timber_number:02d}"
-    os.makedirs(config.CAPTURE_DIR, exist_ok=True)
-    mask_path = os.path.join(config.CAPTURE_DIR, f"{base_name}_mask.png")
-    cv2.imwrite(mask_path, mask)
 
-    if contour is None or timber_corners_px is None:
+    # --------------------------------------------------------
+    # 5. OUTPUT PATHS
+    # --------------------------------------------------------
+
+    base_name = f"timber_{timber_number:02d}"
+
+    os.makedirs(
+        config.CAPTURE_DIR,
+        exist_ok=True
+    )
+
+    mask_path = os.path.join(
+        config.CAPTURE_DIR,
+        f"{base_name}_mask.png"
+    )
+
+    cv2.imwrite(
+        mask_path,
+        mask
+    )
+
+
+    # --------------------------------------------------------
+    # 6. CHECK TIMBER DETECTION
+    # --------------------------------------------------------
+
+    if not detected_timbers:
+
         print("\nERROR: No timber detected.")
         print(f"Mask saved to: {mask_path}")
+
         return False
 
-    # Pixel -> mm mapping for corners
-    corners_mm_table = pixel_to_mm(H, timber_corners_px)
 
-    # Pixel -> mm mapping for contour with contour approximation (OpenCV approxPolyDP)
-    # Epsilon = factor * arcLength (OpenCV tutorial standard: https://docs.opencv.org/4.13.0/dd/d49/tutorial_py_contour_features.html)
-    peri = cv2.arcLength(contour, True)
-    approx_factor = float(getattr(config, "CONTOUR_APPROX_FACTOR", 0.001))
-    epsilon = approx_factor * peri
-    approx_contour_px = cv2.approxPolyDP(contour, epsilon, True)
-    approx_cnt = approx_contour_px.reshape(-1, 2)
-    contour_mm_table = pixel_to_mm(H, approx_cnt)
+    print(
+        f"\nDetected {len(detected_timbers)} timber(s)."
+    )
 
-    print(f"\nContour Approximation:")
-    print(f"  Raw contour points:       {len(contour)}")
-    print(f"  Approx factor (epsilon):  {approx_factor} ({epsilon:.2f} px)")
-    print(f"  Approximated points:      {len(approx_contour_px)}")
 
-    # Parallax compensation
-    H_cam = float(getattr(config, "CAMERA_HEIGHT_MM", 0.0))
-    h_timber = float(timber_thickness_mm)
+    # ========================================================
+    # 7. WORKSPACE INFORMATION
+    #    THIS IS OUTSIDE THE TIMBER LOOP
+    # ========================================================
 
-    if H_cam > 0 and h_timber > 0 and H_cam > h_timber and os.path.exists(config.CAMERA_CALIB_FILE):
-        scale_factor = (H_cam - h_timber) / H_cam
-        calib = np.load(config.CAMERA_CALIB_FILE)
-        K = calib["camera_matrix"]
-        cx, cy = K[0, 2], K[1, 2]
-        cam_center_table = pixel_to_mm(H, [[cx, cy]])[0]
-        Xc, Yc = cam_center_table[0], cam_center_table[1]
+    marker_order = (
+        [1, 0, 2, 3]
+        if {1, 0, 2, 3}.issubset(
+            detected_all.keys()
+        )
+        else list(detected_all.keys())
+    )
 
-        corners_mm = []
-        for pt in corners_mm_table:
-            X_corr = Xc + (pt[0] - Xc) * scale_factor
-            Y_corr = Yc + (pt[1] - Yc) * scale_factor
-            corners_mm.append([X_corr, Y_corr])
-        corners_mm = np.asarray(corners_mm, dtype=np.float32)
-
-        contour_mm = []
-        for pt in contour_mm_table:
-            X_corr = Xc + (pt[0] - Xc) * scale_factor
-            Y_corr = Yc + (pt[1] - Yc) * scale_factor
-            contour_mm.append([X_corr, Y_corr])
-        contour_mm = np.asarray(contour_mm, dtype=np.float32)
-    else:
-        corners_mm = corners_mm_table
-        contour_mm = contour_mm_table
-
-    # Surface Area calculation in real-world mm²
-    surface_area_mm2 = abs(cv2.contourArea(contour_mm.astype(np.float32).reshape(-1, 1, 2)))
-    surface_area_cm2 = surface_area_mm2 / 100.0
-
-    # Dimensions
-    side_lengths = [
-        float(np.linalg.norm(corners_mm[(i + 1) % 4] - corners_mm[i]))
-        for i in range(4)
-    ]
-    dim_a = (side_lengths[0] + side_lengths[2]) / 2.0
-    dim_b = (side_lengths[1] + side_lengths[3]) / 2.0
-    length_mm = max(dim_a, dim_b)
-    width_mm = min(dim_a, dim_b)
-
-    # Sample color (LAB + RGB + HEX)
-    color_info = sample_timber_color(img_undist, contour)
-
-    # Calculate detected ArUco marker centers and corners in real-world mm
-    marker_order = [1, 0, 2, 3] if {1, 0, 2, 3}.issubset(detected_all.keys()) else list(detected_all.keys())
     markers_info = {}
+
     for m_id in marker_order:
+
         m_corners_px = detected_all[m_id]
-        m_corners_mm = pixel_to_mm(H, m_corners_px)
-        m_center_px = m_corners_px.mean(axis=0)
-        m_center_mm = pixel_to_mm(H, [m_center_px])[0]
-        m_outer_mm = pixel_to_mm(H, [detected_outer[m_id]])[0]
+
+        m_corners_mm = pixel_to_mm(
+            H,
+            m_corners_px
+        )
+
+        m_center_px = (
+            m_corners_px.mean(axis=0)
+        )
+
+        m_center_mm = pixel_to_mm(
+            H,
+            [m_center_px]
+        )[0]
+
+        m_outer_mm = pixel_to_mm(
+            H,
+            [detected_outer[m_id]]
+        )[0]
+
         markers_info[str(m_id)] = {
-            "outer_corner_mm": [round(float(m_outer_mm[0]), 2), round(float(m_outer_mm[1]), 2)],
-            "center_mm": [round(float(m_center_mm[0]), 2), round(float(m_center_mm[1]), 2)],
-            "corners_mm": [[round(float(pt[0]), 2), round(float(pt[1]), 2)] for pt in m_corners_mm]
+
+            "outer_corner_mm": [
+                round(float(m_outer_mm[0]), 2),
+                round(float(m_outer_mm[1]), 2)
+            ],
+
+            "center_mm": [
+                round(float(m_center_mm[0]), 2),
+                round(float(m_center_mm[1]), 2)
+            ],
+
+            "corners_mm": [
+                [
+                    round(float(pt[0]), 2),
+                    round(float(pt[1]), 2)
+                ]
+                for pt in m_corners_mm
+            ]
         }
 
-    # Reference Frame definition based on Marker 1 as Origin (0,0,0) (CAD / Rhino standard)
-    # +X points along table length towards Marker 0
-    # +Y points across table width towards Marker 2
-    # +Z points normal to table upwards
+
+    # --------------------------------------------------------
+    # 8. REFERENCE FRAME
+    #    ALSO OUTSIDE THE TIMBER LOOP
+    # --------------------------------------------------------
+
     reference_frame = {
+
         "origin_marker_id": 1,
-        "origin_mm": [0.0, 0.0, 0.0],
-        "x_axis": [1.0, 0.0, 0.0],
-        "y_axis": [0.0, 1.0, 0.0],
-        "z_axis": [0.0, 0.0, 1.0],
-        "description": "Origin (0,0,0) at Marker 1 outer corner (Bottom-Left); +X towards Marker 0; +Y towards Marker 2"
+
+        "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+        ],
+
+        "x_axis": [
+            1.0,
+            0.0,
+            0.0
+        ],
+
+        "y_axis": [
+            0.0,
+            1.0,
+            0.0
+        ],
+
+        "z_axis": [
+            0.0,
+            0.0,
+            1.0
+        ],
+
+        "description":
+            "Origin (0,0,0) at Marker 1 outer corner "
+            "(Bottom-Left); +X towards Marker 0; "
+            "+Y towards Marker 2"
     }
 
-    # Build JSON result
-    result = {
-        "timber_id": timber_number,
-        "source_image": os.path.abspath(image_path),
-        "reference_frame": reference_frame,
-        "markers_world_mm": markers_info,
-        "length_mm": round(length_mm, 2),
-        "width_mm": round(width_mm, 2),
-        "surface_area_mm2": round(float(surface_area_mm2), 2),
-        "surface_area_cm2": round(float(surface_area_cm2), 2),
-        "side_lengths_mm": [round(s, 2) for s in side_lengths],
-        "corners_mm": [
-            [round(float(x), 2), round(float(y), 2)]
-            for x, y in corners_mm
-        ],
-        "contour_mm": [
-            [round(float(x), 2), round(float(y), 2)]
-            for x, y in contour_mm
-        ],
-        "timber_thickness_mm": round(timber_thickness_mm, 1),
-        "color_rgb": color_info["rgb"],
-        "color_hex": color_info["hex"],
-        "color_lab": color_info["lab"],
-        "defects": []
-    }
 
-    out_path = os.path.join(config.CAPTURE_DIR, f"{base_name}_measurement.json")
-    with open(out_path, "w") as f:
-        json.dump(result, f, indent=2)
+    # ========================================================
+    # 9. PREPARE PARALLAX VALUES
+    #    CALCULATE ONCE, USE FOR ALL TIMBERS
+    # ========================================================
 
-    # Debug Overlay
+    H_cam = float(
+        getattr(
+            config,
+            "CAMERA_HEIGHT_MM",
+            0.0
+        )
+    )
+
+    h_timber = float(
+        timber_thickness_mm
+    )
+
+    use_parallax = (
+        H_cam > 0
+        and h_timber > 0
+        and H_cam > h_timber
+        and os.path.exists(
+            config.CAMERA_CALIB_FILE
+        )
+    )
+
+
+    if use_parallax:
+
+        scale_factor = (
+            H_cam - h_timber
+        ) / H_cam
+
+        calib = np.load(
+            config.CAMERA_CALIB_FILE
+        )
+
+        K = calib[
+            "camera_matrix"
+        ]
+
+        cx_cam = K[0, 2]
+        cy_cam = K[1, 2]
+
+        cam_center_table = pixel_to_mm(
+            H,
+            [[cx_cam, cy_cam]]
+        )[0]
+
+        Xc = cam_center_table[0]
+        Yc = cam_center_table[1]
+
+    else:
+
+        scale_factor = 1.0
+        Xc = 0.0
+        Yc = 0.0
+
+
+    # ========================================================
+    # 10. DEBUG OVERLAY
+    # ========================================================
+
     overlay = img_undist.copy()
 
-    # Outer workspace (Red)
-    cv2.polylines(overlay, [np.int32(workspace_outer_px)], True, (0, 0, 255), 3)
 
-    # ArUco markers (Magenta)
+    # Draw workspace
+    cv2.polylines(
+        overlay,
+        [np.int32(workspace_outer_px)],
+        True,
+        (0, 0, 255),
+        3
+    )
+
+
+    # Draw ArUco markers
     for m_id in [0, 1, 2, 3]:
+
         if m_id in detected_all:
+
             pts = detected_all[m_id]
-            cv2.polylines(overlay, [np.int32(pts)], True, (255, 0, 255), 2)
-            c = pts.mean(axis=0)
-            cv2.putText(
-                overlay, f"ID {m_id}", (int(c[0]), int(c[1])),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2
+
+            cv2.polylines(
+                overlay,
+                [np.int32(pts)],
+                True,
+                (255, 0, 255),
+                2
             )
 
-    # Exact Timber contour (Yellow, smoothed approxPolyDP)
-    cv2.drawContours(overlay, [approx_contour_px], -1, (0, 255, 255), 3)
+            c = pts.mean(axis=0)
 
-    # Fitted Timber bounding box (Green) matching the yellow contour
-    cv2.polylines(overlay, [np.int32(timber_corners_px)], True, (0, 255, 0), 3)
+            cv2.putText(
+                overlay,
+                f"ID {m_id}",
+                (
+                    int(c[0]),
+                    int(c[1])
+                ),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 0, 255),
+                2
+            )
 
-    for i, pt in enumerate(timber_corners_px):
-        x, y = int(round(pt[0])), int(round(pt[1]))
-        cv2.circle(overlay, (x, y), 7, (0, 255, 0), -1)
-        cv2.putText(overlay, str(i), (x + 10, y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    # Labels
-    cv2.putText(overlay, "RED: workspace | YELLOW: timber contour | GREEN: measured box", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    cv2.putText(overlay, f"Dim: {length_mm:.1f} x {width_mm:.1f} mm  |  Area: {surface_area_cm2:.1f} cm2  (Thick: {timber_thickness_mm:.1f} mm)", (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+    # ========================================================
+    # 11. CREATE LIST FOR ALL TIMBERS
+    # ========================================================
 
-    overlay_path = os.path.join(config.CAPTURE_DIR, f"{base_name}_overlay.png")
-    cv2.imwrite(overlay_path, overlay)
+    timbers_result = []
 
-    print("\n" + "-" * 60)
-    print(f"TIMBER {timber_number:02d} MEASUREMENT")
-    print("-" * 60)
-    print(f"Length:       {length_mm:.2f} mm")
-    print(f"Width:        {width_mm:.2f} mm")
-    print(f"Surface Area: {surface_area_mm2:.1f} mm² ({surface_area_cm2:.2f} cm²)")
-    print(f"Thickness:    {timber_thickness_mm:.1f} mm (parallax input)")
-    print(f"Sides:        {[round(s, 2) for s in side_lengths]} mm")
-    print(f"Color RGB:    R={color_info['rgb']['R']}, G={color_info['rgb']['G']}, B={color_info['rgb']['B']} ({color_info['hex']})")
-    print(f"Color LAB:    L={color_info['lab']['L']:.2f}, a={color_info['lab']['a']:.2f}, b={color_info['lab']['b']:.2f}")
-    print(f"\nSaved:")
-    print(f"  JSON:       {out_path}")
-    print(f"  Mask:       {mask_path}")
-    print(f"  Overlay:    {overlay_path}")
+
+    # ========================================================
+    # 12. LOOP THROUGH EVERY DETECTED TIMBER
+    # ========================================================
+
+    for i, timber in enumerate(
+        detected_timbers
+    ):
+
+        print(
+            "\n" +
+            "-" * 50
+        )
+
+        print(
+            f"Processing timber {i + 1}"
+        )
+
+        print(
+            "-" * 50
+        )
+
+
+        # ----------------------------------------------------
+        # GET THIS TIMBER'S CONTOUR + CORNERS
+        # ----------------------------------------------------
+
+        contour = timber[
+            "contour"
+        ]
+
+        timber_corners_px = timber[
+            "corners_px"
+        ]
+
+
+        # ----------------------------------------------------
+        # PIXEL -> MM : CORNERS
+        # ----------------------------------------------------
+
+        corners_mm_table = pixel_to_mm(
+            H,
+            timber_corners_px
+        )
+
+
+        # ----------------------------------------------------
+        # CONTOUR APPROXIMATION
+        # ----------------------------------------------------
+
+        peri = cv2.arcLength(
+            contour,
+            True
+        )
+
+        approx_factor = float(
+            getattr(
+                config,
+                "CONTOUR_APPROX_FACTOR",
+                0.001
+            )
+        )
+
+        epsilon = (
+            approx_factor
+            * peri
+        )
+
+        approx_contour_px = (
+            cv2.approxPolyDP(
+                contour,
+                epsilon,
+                True
+            )
+        )
+
+        approx_cnt = (
+            approx_contour_px
+            .reshape(-1, 2)
+        )
+
+        contour_mm_table = pixel_to_mm(
+            H,
+            approx_cnt
+        )
+
+
+        print(
+            f"Raw contour points: "
+            f"{len(contour)}"
+        )
+
+        print(
+            f"Approximated points: "
+            f"{len(approx_contour_px)}"
+        )
+
+
+        # ----------------------------------------------------
+        # PARALLAX COMPENSATION
+        # ----------------------------------------------------
+
+        if use_parallax:
+
+            corners_mm = np.array(
+
+                [
+                    [
+                        Xc
+                        + (
+                            pt[0] - Xc
+                        )
+                        * scale_factor,
+
+                        Yc
+                        + (
+                            pt[1] - Yc
+                        )
+                        * scale_factor
+                    ]
+
+                    for pt
+                    in corners_mm_table
+                ],
+
+                dtype=np.float32
+            )
+
+
+            contour_mm = np.array(
+
+                [
+                    [
+                        Xc
+                        + (
+                            pt[0] - Xc
+                        )
+                        * scale_factor,
+
+                        Yc
+                        + (
+                            pt[1] - Yc
+                        )
+                        * scale_factor
+                    ]
+
+                    for pt
+                    in contour_mm_table
+                ],
+
+                dtype=np.float32
+            )
+
+        else:
+
+            corners_mm = (
+                corners_mm_table
+            )
+
+            contour_mm = (
+                contour_mm_table
+            )
+
+
+        # ----------------------------------------------------
+        # SURFACE AREA
+        # ----------------------------------------------------
+
+        surface_area_mm2 = abs(
+
+            cv2.contourArea(
+
+                contour_mm
+                .astype(
+                    np.float32
+                )
+                .reshape(
+                    -1,
+                    1,
+                    2
+                )
+            )
+        )
+
+        surface_area_cm2 = (
+            surface_area_mm2
+            / 100.0
+        )
+
+
+        # ----------------------------------------------------
+        # DIMENSIONS
+        # ----------------------------------------------------
+
+        side_lengths = [
+
+            float(
+
+                np.linalg.norm(
+
+                    corners_mm[
+                        (j + 1) % 4
+                    ]
+
+                    -
+
+                    corners_mm[j]
+                )
+            )
+
+            for j in range(4)
+        ]
+
+
+        dim_a = (
+            side_lengths[0]
+            +
+            side_lengths[2]
+        ) / 2.0
+
+
+        dim_b = (
+            side_lengths[1]
+            +
+            side_lengths[3]
+        ) / 2.0
+
+
+        length_mm = max(
+            dim_a,
+            dim_b
+        )
+
+        width_mm = min(
+            dim_a,
+            dim_b
+        )
+
+
+        # ----------------------------------------------------
+        # COLOR
+        # ----------------------------------------------------
+
+        color_info = sample_timber_color(
+            img_undist,
+            contour
+        )
+
+
+        # ----------------------------------------------------
+        # CREATE THIS TIMBER'S JSON DATA
+        # ----------------------------------------------------
+
+        timber_result = {
+
+            "timber_id":
+                i + 1,
+
+            "length_mm":
+                round(
+                    length_mm,
+                    2
+                ),
+
+            "width_mm":
+                round(
+                    width_mm,
+                    2
+                ),
+
+            "surface_area_mm2":
+                round(
+                    float(
+                        surface_area_mm2
+                    ),
+                    2
+                ),
+
+            "surface_area_cm2":
+                round(
+                    float(
+                        surface_area_cm2
+                    ),
+                    2
+                ),
+
+            "side_lengths_mm": [
+                round(
+                    s,
+                    2
+                )
+                for s
+                in side_lengths
+            ],
+
+            "corners_mm": [
+
+                [
+                    round(
+                        float(x),
+                        2
+                    ),
+
+                    round(
+                        float(y),
+                        2
+                    )
+                ]
+
+                for x, y
+                in corners_mm
+            ],
+
+            "contour_mm": [
+
+                [
+                    round(
+                        float(x),
+                        2
+                    ),
+
+                    round(
+                        float(y),
+                        2
+                    )
+                ]
+
+                for x, y
+                in contour_mm
+            ],
+
+            "timber_thickness_mm":
+                round(
+                    timber_thickness_mm,
+                    1
+                ),
+
+            "color_rgb":
+                color_info[
+                    "rgb"
+                ],
+
+            "color_hex":
+                color_info[
+                    "hex"
+                ],
+
+            "color_lab":
+                color_info[
+                    "lab"
+                ],
+
+            "defects": []
+        }
+
+
+        # ADD THIS TIMBER TO LIST
+        timbers_result.append(
+            timber_result
+        )
+
+
+        # ====================================================
+        # DRAW THIS TIMBER ON DEBUG OVERLAY
+        # ====================================================
+
+        # Yellow contour
+        cv2.drawContours(
+            overlay,
+            [approx_contour_px],
+            -1,
+            (0, 255, 255),
+            3
+        )
+
+
+        # Green bounding box
+        cv2.polylines(
+            overlay,
+            [
+                np.int32(
+                    timber_corners_px
+                )
+            ],
+            True,
+            (0, 255, 0),
+            3
+        )
+
+
+        # Corner points
+        for corner_index, pt in enumerate(
+            timber_corners_px
+        ):
+
+            x = int(
+                round(pt[0])
+            )
+
+            y = int(
+                round(pt[1])
+            )
+
+            cv2.circle(
+                overlay,
+                (x, y),
+                7,
+                (0, 255, 0),
+                -1
+            )
+
+
+        # ----------------------------------------------------
+        # LABEL TIMBER
+        # ----------------------------------------------------
+
+        center_x = int(
+            np.mean(
+                timber_corners_px[:, 0]
+            )
+        )
+
+        center_y = int(
+            np.mean(
+                timber_corners_px[:, 1]
+            )
+        )
+
+
+        cv2.putText(
+            overlay,
+
+            (
+                f"T{i + 1}: "
+                f"{length_mm:.1f} x "
+                f"{width_mm:.1f} mm"
+            ),
+
+            (
+                center_x - 80,
+                center_y
+            ),
+
+            cv2.FONT_HERSHEY_SIMPLEX,
+
+            0.7,
+
+            (0, 255, 0),
+
+            2
+        )
+
+
+        # ----------------------------------------------------
+        # PRINT THIS TIMBER'S RESULTS
+        # ----------------------------------------------------
+
+        print(
+            f"Timber ID:     {i + 1}"
+        )
+
+        print(
+            f"Length:        "
+            f"{length_mm:.2f} mm"
+        )
+
+        print(
+            f"Width:         "
+            f"{width_mm:.2f} mm"
+        )
+
+        print(
+            f"Surface Area:  "
+            f"{surface_area_mm2:.1f} mm² "
+            f"({surface_area_cm2:.2f} cm²)"
+        )
+
+        print(
+            f"Sides:         "
+            f"{[round(s, 2) for s in side_lengths]}"
+        )
+
+        print(
+            f"Color:         "
+            f"{color_info['hex']}"
+        )
+
+
+    # ========================================================
+    # 13. LOOP FINISHED
+    #     NOW BUILD ONE JSON FOR THE WHOLE CAPTURE
+    # ========================================================
+
+    result = {
+
+        "capture_id":
+            timber_number,
+
+        "source_image":
+            os.path.abspath(
+                image_path
+            ),
+
+        "reference_frame":
+            reference_frame,
+
+        "markers_world_mm":
+            markers_info,
+
+        "timber_count":
+            len(
+                timbers_result
+            ),
+
+        "timbers":
+            timbers_result
+    }
+
+
+    # ========================================================
+    # 14. SAVE ONE JSON FILE
+    # ========================================================
+
+    out_path = os.path.join(
+
+        config.CAPTURE_DIR,
+
+        f"{base_name}_measurement.json"
+    )
+
+
+    with open(
+        out_path,
+        "w"
+    ) as f:
+
+        json.dump(
+            result,
+            f,
+            indent=2
+        )
+
+
+    # ========================================================
+    # 15. SAVE DEBUG OVERLAY
+    # ========================================================
+
+    cv2.putText(
+        overlay,
+
+        (
+            f"Detected timbers: "
+            f"{len(timbers_result)}"
+        ),
+
+        (20, 30),
+
+        cv2.FONT_HERSHEY_SIMPLEX,
+
+        0.8,
+
+        (255, 255, 255),
+
+        2
+    )
+
+
+    overlay_path = os.path.join(
+
+        config.CAPTURE_DIR,
+
+        f"{base_name}_overlay.png"
+    )
+
+
+    cv2.imwrite(
+        overlay_path,
+        overlay
+    )
+
+
+    # ========================================================
+    # 16. FINAL REPORT
+    # ========================================================
+
+    print(
+        "\n" +
+        "=" * 60
+    )
+
+    print(
+        f"CAPTURE {timber_number:02d} COMPLETE"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    print(
+        f"Detected timbers: "
+        f"{len(timbers_result)}"
+    )
+
+    print(
+        f"JSON:    {out_path}"
+    )
+
+    print(
+        f"Mask:    {mask_path}"
+    )
+
+    print(
+        f"Overlay: {overlay_path}"
+    )
+
 
     return True
 
-
 # ============================================================
-# REAL-TIME LIVE VIEWPORT OVERLAY
+# REAL-TIME LIVE VIEWPORT OVERLAY - MULTI TIMBER
 # ============================================================
 
 def render_live_viewport(img_undist, timber_number, current_thickness):
     """
-    Run real-time detection on the live camera frame and return an annotated viewport display:
-    - Red outline for detected ArUco workspace
-    - Magenta boxes and IDs for ArUco markers
-    - Smooth Yellow contour (approxPolyDP) for detected timber
-    - Green bounding box and corner dots
-    - Real-time dimension readout (Length x Width mm) and status overlay
+    Real-time multi-timber detection viewport.
+
+    Shows:
+    - Red workspace boundary
+    - Magenta ArUco markers
+    - Yellow contour for every detected timber
+    - Green bounding box for every detected timber
+    - Timber ID and live dimensions
     """
+
     display = img_undist.copy()
 
-    H, errors_mm, detected_outer, detected_inner, detected_all = compute_live_homography(img_undist, verbose=False)
+    # --------------------------------------------------------
+    # 1. DETECT ARUCO + HOMOGRAPHY
+    # --------------------------------------------------------
+
+    (
+        H,
+        errors_mm,
+        detected_outer,
+        detected_inner,
+        detected_all
+    ) = compute_live_homography(
+        img_undist,
+        verbose=False
+    )
 
     timber_detected = False
-    status_text = "Place timber inside black workspace"
-    dim_text = ""
+    timber_count = 0
+
+    status_text = "Place timber(s) inside black workspace"
+
+
+    # --------------------------------------------------------
+    # 2. IF WORKSPACE IS DETECTED
+    # --------------------------------------------------------
 
     if H is not None and detected_outer is not None:
-        # Physical workspace order: BL (1) -> BR (0) -> TR (3) -> TL (2)
+
+        # Physical workspace
         workspace_outer_px = order_quad(
-            np.array([detected_outer[m] for m in [1, 0, 2, 3] if m in detected_outer], dtype=np.float32)
+            np.array(
+                [
+                    detected_outer[m]
+                    for m in [1, 0, 2, 3]
+                    if m in detected_outer
+                ],
+                dtype=np.float32
+            )
         )
 
-        # Draw outer workspace boundary (Red)
-        cv2.polylines(display, [np.int32(workspace_outer_px)], True, (0, 0, 255), 2)
 
-        # Draw ArUco markers (Magenta)
+        # ----------------------------------------------------
+        # DRAW WORKSPACE
+        # ----------------------------------------------------
+
+        cv2.polylines(
+            display,
+            [np.int32(workspace_outer_px)],
+            True,
+            (0, 0, 255),
+            2
+        )
+
+
+        # ----------------------------------------------------
+        # DRAW ARUCO MARKERS
+        # ----------------------------------------------------
+
         for m_id in [1, 0, 2, 3]:
+
             if m_id in detected_all:
+
                 pts = detected_all[m_id]
-                cv2.polylines(display, [np.int32(pts)], True, (255, 0, 255), 2)
-                c = pts.mean(axis=0)
-                cv2.putText(
-                    display, f"ID {m_id}", (int(c[0]) - 20, int(c[1])),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2
+
+                cv2.polylines(
+                    display,
+                    [np.int32(pts)],
+                    True,
+                    (255, 0, 255),
+                    2
                 )
 
-        # Run fast live timber segmentation
-        contour, mask, timber_corners_px = segment_board(
-            img_undist, workspace_outer_px, detected_all, verbose=False
+                c = pts.mean(axis=0)
+
+                cv2.putText(
+                    display,
+                    f"ID {m_id}",
+                    (
+                        int(c[0]) - 20,
+                        int(c[1])
+                    ),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 0, 255),
+                    2
+                )
+
+
+        # ----------------------------------------------------
+        # 3. DETECT ALL TIMBERS
+        # ----------------------------------------------------
+
+        detected_timbers, mask = segment_board(
+            img_undist,
+            workspace_outer_px,
+            detected_all,
+            verbose=False
         )
 
-        if contour is not None and timber_corners_px is not None:
+
+        # ----------------------------------------------------
+        # 4. IF TIMBERS FOUND
+        # ----------------------------------------------------
+
+        if detected_timbers:
+
             timber_detected = True
 
-            # Contour approximation (Douglas-Peucker algorithm via cv2.approxPolyDP)
-            peri = cv2.arcLength(contour, True)
-            approx_factor = float(getattr(config, "CONTOUR_APPROX_FACTOR", 0.001))
-            epsilon = approx_factor * peri
-            approx_contour_px = cv2.approxPolyDP(contour, epsilon, True)
+            timber_count = len(
+                detected_timbers
+            )
 
-            # Draw Yellow smoothed contour
-            cv2.drawContours(display, [approx_contour_px], -1, (0, 255, 255), 2)
+            status_text = (
+                f"{timber_count} timber(s) detected"
+            )
 
-            # Draw Green bounding box
-            cv2.polylines(display, [np.int32(timber_corners_px)], True, (0, 255, 0), 2)
 
-            for i, pt in enumerate(timber_corners_px):
-                x, y = int(round(pt[0])), int(round(pt[1]))
-                cv2.circle(display, (x, y), 5, (0, 255, 0), -1)
+            # =================================================
+            # PREPARE PARALLAX VALUES ONCE
+            # =================================================
 
-            # Live dimensions with parallax compensation
-            corners_mm_raw = pixel_to_mm(H, timber_corners_px)
+            H_cam = float(
+                getattr(
+                    config,
+                    "CAMERA_HEIGHT_MM",
+                    0.0
+                )
+            )
 
-            # Apply parallax correction (same formula as measure_timber)
-            H_cam = float(getattr(config, "CAMERA_HEIGHT_MM", 0.0))
-            h_timber = float(current_thickness)
-            if H_cam > 0 and h_timber > 0 and H_cam > h_timber and os.path.exists(config.CAMERA_CALIB_FILE):
-                scale_factor = (H_cam - h_timber) / H_cam
-                calib = np.load(config.CAMERA_CALIB_FILE)
-                K = calib["camera_matrix"]
-                cx_cam, cy_cam = K[0, 2], K[1, 2]
-                cam_center_table = pixel_to_mm(H, [[cx_cam, cy_cam]])[0]
-                Xc, Yc = cam_center_table[0], cam_center_table[1]
-                corners_mm = np.array([
-                    [Xc + (pt[0] - Xc) * scale_factor, Yc + (pt[1] - Yc) * scale_factor]
-                    for pt in corners_mm_raw
-                ], dtype=np.float32)
-            else:
-                corners_mm = corners_mm_raw
+            h_timber = float(
+                current_thickness
+            )
 
-            side_lengths = [
-                float(np.linalg.norm(corners_mm[(i + 1) % 4] - corners_mm[i]))
-                for i in range(4)
-            ]
-            dim_a = (side_lengths[0] + side_lengths[2]) / 2.0
-            dim_b = (side_lengths[1] + side_lengths[3]) / 2.0
-            length_mm = max(dim_a, dim_b)
-            width_mm = min(dim_a, dim_b)
-            thick_label = f"  T={current_thickness:.0f}mm" if current_thickness > 0 else ""
-            dim_text = f"Live: {length_mm:.1f} x {width_mm:.1f} mm ({len(approx_contour_px)} pts){thick_label}"
-            status_text = "Timber detected! Press SPACE to capture"
+            use_parallax = (
+                H_cam > 0
+                and h_timber > 0
+                and H_cam > h_timber
+                and os.path.exists(
+                    config.CAMERA_CALIB_FILE
+                )
+            )
 
-            # Label on timber centroid
-            cx = int(timber_corners_px[:, 0].mean())
-            cy = int(timber_corners_px[:, 1].mean())
-            cv2.putText(display, f"{length_mm:.1f} x {width_mm:.1f} mm", (cx - 70, cy),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            if use_parallax:
+
+                scale_factor = (
+                    H_cam - h_timber
+                ) / H_cam
+
+                calib = np.load(
+                    config.CAMERA_CALIB_FILE
+                )
+
+                K = calib[
+                    "camera_matrix"
+                ]
+
+                cx_cam = K[0, 2]
+                cy_cam = K[1, 2]
+
+                cam_center_table = pixel_to_mm(
+                    H,
+                    [[cx_cam, cy_cam]]
+                )[0]
+
+                Xc = cam_center_table[0]
+                Yc = cam_center_table[1]
+
+
+            # =================================================
+            # 5. LOOP THROUGH ALL TIMBERS
+            # =================================================
+
+            for timber_index, timber in enumerate(
+                detected_timbers
+            ):
+
+                contour = timber[
+                    "contour"
+                ]
+
+                timber_corners_px = timber[
+                    "corners_px"
+                ]
+
+
+                # ---------------------------------------------
+                # CONTOUR APPROXIMATION
+                # ---------------------------------------------
+
+                peri = cv2.arcLength(
+                    contour,
+                    True
+                )
+
+                approx_factor = float(
+                    getattr(
+                        config,
+                        "CONTOUR_APPROX_FACTOR",
+                        0.001
+                    )
+                )
+
+                epsilon = (
+                    approx_factor
+                    * peri
+                )
+
+                approx_contour_px = (
+                    cv2.approxPolyDP(
+                        contour,
+                        epsilon,
+                        True
+                    )
+                )
+
+
+                # ---------------------------------------------
+                # DRAW YELLOW CONTOUR
+                # ---------------------------------------------
+
+                cv2.drawContours(
+                    display,
+                    [approx_contour_px],
+                    -1,
+                    (0, 255, 255),
+                    2
+                )
+
+
+                # ---------------------------------------------
+                # DRAW GREEN BOUNDING BOX
+                # ---------------------------------------------
+
+                cv2.polylines(
+                    display,
+                    [
+                        np.int32(
+                            timber_corners_px
+                        )
+                    ],
+                    True,
+                    (0, 255, 0),
+                    2
+                )
+
+
+                # ---------------------------------------------
+                # DRAW CORNER POINTS
+                # ---------------------------------------------
+
+                for pt in timber_corners_px:
+
+                    x = int(
+                        round(pt[0])
+                    )
+
+                    y = int(
+                        round(pt[1])
+                    )
+
+                    cv2.circle(
+                        display,
+                        (x, y),
+                        5,
+                        (0, 255, 0),
+                        -1
+                    )
+
+
+                # ---------------------------------------------
+                # PIXEL -> MM
+                # ---------------------------------------------
+
+                corners_mm_raw = pixel_to_mm(
+                    H,
+                    timber_corners_px
+                )
+
+
+                # ---------------------------------------------
+                # PARALLAX CORRECTION
+                # ---------------------------------------------
+
+                if use_parallax:
+
+                    corners_mm = np.array(
+                        [
+                            [
+                                Xc
+                                + (
+                                    pt[0] - Xc
+                                )
+                                * scale_factor,
+
+                                Yc
+                                + (
+                                    pt[1] - Yc
+                                )
+                                * scale_factor
+                            ]
+
+                            for pt
+                            in corners_mm_raw
+                        ],
+
+                        dtype=np.float32
+                    )
+
+                else:
+
+                    corners_mm = (
+                        corners_mm_raw
+                    )
+
+
+                # ---------------------------------------------
+                # DIMENSIONS
+                # ---------------------------------------------
+
+                side_lengths = [
+
+                    float(
+
+                        np.linalg.norm(
+
+                            corners_mm[
+                                (j + 1) % 4
+                            ]
+
+                            -
+
+                            corners_mm[j]
+                        )
+                    )
+
+                    for j in range(4)
+                ]
+
+
+                dim_a = (
+                    side_lengths[0]
+                    +
+                    side_lengths[2]
+                ) / 2.0
+
+
+                dim_b = (
+                    side_lengths[1]
+                    +
+                    side_lengths[3]
+                ) / 2.0
+
+
+                length_mm = max(
+                    dim_a,
+                    dim_b
+                )
+
+                width_mm = min(
+                    dim_a,
+                    dim_b
+                )
+
+
+                # ---------------------------------------------
+                # CENTER OF TIMBER
+                # ---------------------------------------------
+
+                center_x = int(
+                    timber_corners_px[
+                        :, 0
+                    ].mean()
+                )
+
+                center_y = int(
+                    timber_corners_px[
+                        :, 1
+                    ].mean()
+                )
+
+
+                # ---------------------------------------------
+                # TIMBER LABEL
+                # ---------------------------------------------
+
+                cv2.putText(
+                    display,
+
+                    (
+                        f"T{timber_index + 1}: "
+                        f"{length_mm:.1f} x "
+                        f"{width_mm:.1f} mm"
+                    ),
+
+                    (
+                        center_x - 90,
+                        center_y
+                    ),
+
+                    cv2.FONT_HERSHEY_SIMPLEX,
+
+                    0.65,
+
+                    (0, 255, 0),
+
+                    2
+                )
+
+
+        else:
+
+            status_text = (
+                "No timber detected inside workspace"
+            )
+
+
     else:
-        status_text = "Looking for 4 ArUco markers..."
 
-    # Top HUD Bar
+        status_text = (
+            "Looking for 4 ArUco markers..."
+        )
+
+
+    # ========================================================
+    # 6. TOP HUD
+    # ========================================================
+
     h, w = display.shape[:2]
-    header = np.zeros((85, w, 3), dtype=np.uint8)
-    cv2.putText(header, f"TIMBER {timber_number:02d}  |  {dim_text if dim_text else status_text}", (20, 32),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0) if timber_detected else (0, 200, 255), 2)
-    cv2.putText(header, f"SPACE = Capture & Save JSON  |  T = Thickness ({current_thickness:.1f} mm)  |  ENTER/ESC = Exit", (20, 68),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (220, 220, 220), 2)
 
-    # Blend header onto display
-    display[:85] = cv2.addWeighted(display[:85], 0.25, header, 0.75, 0)
+    header = np.zeros(
+        (
+            85,
+            w,
+            3
+        ),
+        dtype=np.uint8
+    )
+
+
+    # First line
+    if timber_detected:
+
+        top_text = (
+            f"CAPTURE {timber_number:02d}"
+            f"  |  "
+            f"{timber_count} timber(s) detected"
+            f"  |  "
+            f"Thickness: {current_thickness:.1f} mm"
+        )
+
+    else:
+
+        top_text = (
+            f"CAPTURE {timber_number:02d}"
+            f"  |  "
+            f"{status_text}"
+        )
+
+
+    cv2.putText(
+        header,
+        top_text,
+        (20, 32),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (
+            (0, 255, 0)
+            if timber_detected
+            else (0, 200, 255)
+        ),
+        2
+    )
+
+
+    # Second line
+    cv2.putText(
+        header,
+
+        (
+            "SPACE = Capture & Save JSON"
+            "  |  "
+            "T = Thickness"
+            "  |  "
+            "ENTER/ESC = Exit"
+        ),
+
+        (20, 68),
+
+        cv2.FONT_HERSHEY_SIMPLEX,
+
+        0.65,
+
+        (220, 220, 220),
+
+        2
+    )
+
+
+    # Blend HUD
+    display[:85] = cv2.addWeighted(
+        display[:85],
+        0.25,
+        header,
+        0.75,
+        0
+    )
+
 
     return display
-
-
 # ============================================================
 # FIND NEXT TIMBER NUMBER
 # ============================================================
@@ -817,6 +1953,7 @@ def main():
     print("ENTER / ESC = exit")
     print(f"\nCurrent timber thickness: {current_thickness:.1f} mm")
     print(f"Camera height: {getattr(config, 'CAMERA_HEIGHT_MM', 0.0):.0f} mm")
+    
     print(f"Output folder: {config.CAPTURE_DIR}")
 
     timber_number = get_next_timber_number()

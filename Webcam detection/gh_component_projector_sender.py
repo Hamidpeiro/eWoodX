@@ -220,14 +220,19 @@ def curve_to_polyline_pts(curve_obj, max_chord_error=0.5):
     if curve_obj is None:
         return []
 
+    if hasattr(curve_obj, "Value"):
+        curve_obj = curve_obj.Value
+
     # If already a list of points or raw coordinate lists
     if isinstance(curve_obj, (list, tuple)):
         if len(curve_obj) > 0 and isinstance(curve_obj[0], (list, tuple, rg.Point3d if rg else tuple)):
             pts_out = []
             for p in curve_obj:
+                if hasattr(p, "Value"):
+                    p = p.Value
                 if hasattr(p, "X") and hasattr(p, "Y"):
                     pts_out.append([round(float(p.X), 2), round(float(p.Y), 2)])
-                elif len(p) >= 2:
+                elif isinstance(p, (list, tuple)) and len(p) >= 2:
                     pts_out.append([round(float(p[0]), 2), round(float(p[1]), 2)])
             return pts_out
 
@@ -275,6 +280,10 @@ def point_to_xy(pt_obj):
     """Extract [X, Y] in mm from Point3d or coordinate list."""
     if pt_obj is None:
         return None
+    if hasattr(pt_obj, "Value"):
+        pt_obj = pt_obj.Value
+    if hasattr(pt_obj, "Location"):
+        pt_obj = pt_obj.Location
     if hasattr(pt_obj, "X") and hasattr(pt_obj, "Y"):
         return [round(float(pt_obj.X), 2), round(float(pt_obj.Y), 2)]
     if isinstance(pt_obj, (list, tuple)) and len(pt_obj) >= 2:
@@ -334,14 +343,31 @@ thickness_val = to_float(globals().get("thickness", None), None)
 if not is_active:
     status = "Paused (active = False)"
 else:
-    # 2. Process Timber Contour (supports single curve, list, or grafted DataTree)
+    # ============================================================
+    # 2. PROCESS MULTIPLE TIMBER CONTOURS
+    # ============================================================
+
     contour_list = []
+
     if timber_input is not None:
-        flat_timber = flatten_input(timber_input)
+
+        flat_timber = flatten_input(
+            timber_input
+        )
+
         for item in flat_timber:
-            pts = curve_to_polyline_pts(item)
-            if pts:
-                contour_list.extend(pts)
+
+            pts = curve_to_polyline_pts(
+                item
+            )
+
+            if pts and len(pts) >= 3:
+
+                # IMPORTANT:
+                # append keeps every timber as a separate contour
+                contour_list.append(
+                    pts
+                )
 
     # 3. Process Cut Curves (supports list or grafted DataTree)
     cut_list = []
@@ -426,7 +452,7 @@ else:
         now_str = datetime.datetime.now().strftime("%H:%M:%S")
         status = (
             f"[LIVE OK {now_str}] -> {target_host}:{target_port} | "
-            f"Contour: {len(contour_list)} pts | Cuts: {len(cut_list)} | "
+            f"Contours: {len(contour_list)} | Cuts: {len(cut_list)} | "
             f"Mills: {len(mill_list)} | Holes: {len(pts_list)} | Labels: {len(label_items)}"
         )
     except socket.timeout:

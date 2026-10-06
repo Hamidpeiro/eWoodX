@@ -234,7 +234,6 @@ list_colors_hex = []
 list_defects = []
 list_files = []
 list_raw = []
-
 first_data = None
 
 for f_path in json_files:
@@ -245,21 +244,32 @@ for f_path in json_files:
             if first_data is None:
                 first_data = data
 
-            res = parse_single_timber(data, f_path)
-            if res["contour"] is not None:
-                list_contours.append(res["contour"])
-            list_corners.append(res["corners"])
-            list_ids.append(res["timber_id"])
-            list_lengths.append(res["length_mm"])
-            list_widths.append(res["width_mm"])
-            list_thicknesses.append(res["thickness_mm"])
-            list_areas.append(res["surface_area_cm2"])
-            list_sides.append(res["side_lengths_mm"])
-            list_colors_rgb.append(res["color_rgb"])
-            list_colors_hex.append(res["color_hex"])
-            list_defects.append(res["defects"])
-            list_files.append(f_path)
-            list_raw.append(data)
+            # Check if this JSON contains multiple timbers under "timbers" list
+            if "timbers" in data and isinstance(data["timbers"], list) and len(data["timbers"]) > 0:
+                timbers_in_file = data["timbers"]
+            else:
+                timbers_in_file = [data]
+
+            for t_data in timbers_in_file:
+                # Inherit marker info if needed
+                if "markers_world_mm" in data and "markers_world_mm" not in t_data:
+                    t_data["markers_world_mm"] = data["markers_world_mm"]
+
+                res = parse_single_timber(t_data, f_path)
+                if res["contour"] is not None:
+                    list_contours.append(res["contour"])
+                list_corners.append(res["corners"])
+                list_ids.append(res["timber_id"])
+                list_lengths.append(res["length_mm"])
+                list_widths.append(res["width_mm"])
+                list_thicknesses.append(res["thickness_mm"])
+                list_areas.append(res["surface_area_cm2"])
+                list_sides.append(res["side_lengths_mm"])
+                list_colors_rgb.append(res["color_rgb"])
+                list_colors_hex.append(res["color_hex"])
+                list_defects.append(res["defects"])
+                list_files.append(f_path)
+                list_raw.append(t_data)
     except Exception as e:
         pass
 

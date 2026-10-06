@@ -122,6 +122,29 @@ def parse_color(color_val, default_bgr=(255, 255, 255)):
     return default_bgr
 
 
+def normalize_to_contour_list(raw_data):
+    """
+    Safely normalizes single contour or multiple contours to a list of point lists.
+    - If raw_data is [[x1, y1], [x2, y2], ...], returns [ [[x1, y1], [x2, y2], ...] ]
+    - If raw_data is [ [[x1, y1], ...], [[x1', y1'], ...] ], returns as-is.
+    """
+    if not raw_data:
+        return []
+
+    if isinstance(raw_data, (list, tuple)):
+        if len(raw_data) == 0:
+            return []
+        first = raw_data[0]
+        if isinstance(first, (list, tuple, np.ndarray)):
+            if len(first) >= 2 and isinstance(first[0], (int, float, np.number)):
+                # Single contour of points: [[x, y], [x, y], ...]
+                return [raw_data]
+            elif len(first) > 0 and isinstance(first[0], (list, tuple, np.ndarray)):
+                # List of contours: [ [[x, y], ...], [[x, y], ...] ]
+                return list(raw_data)
+    return []
+
+
 # ============================================================
 # WORLD MM -> PROJECTOR PIXEL TRANSFORM WITH 3D PARALLAX
 # ============================================================
@@ -135,22 +158,27 @@ def world_to_projector(points_mm, off_x=0.0, off_y=0.0, thickness_mm=0.0):
     if points_mm is None or len(points_mm) == 0:
         return np.empty((0, 2), dtype=np.float32)
 
-    pts = np.asarray(points_mm, dtype=np.float32).copy()
-    if pts.ndim == 1 and len(pts) == 2:
-        pts = pts.reshape(1, 2)
+    try:
+        pts = np.asarray(points_mm, dtype=np.float32).copy()
+        if pts.ndim == 1 and len(pts) == 2:
+            pts = pts.reshape(1, 2)
+        elif pts.ndim != 2:
+            return np.empty((0, 2), dtype=np.float32)
 
-    pts[:, 0] += off_x
-    pts[:, 1] += off_y
+        pts[:, 0] += off_x
+        pts[:, 1] += off_y
 
-    # Parallax compensation for object height
-    if thickness_mm > 0.0 and projector_height_mm > thickness_mm:
-        scale_factor = projector_height_mm / (projector_height_mm - thickness_mm)
-        pts[:, 0] = projector_pos_x_mm + (pts[:, 0] - projector_pos_x_mm) * scale_factor
-        pts[:, 1] = projector_pos_y_mm + (pts[:, 1] - projector_pos_y_mm) * scale_factor
+        # Parallax compensation for object height
+        if thickness_mm > 0.0 and projector_height_mm > thickness_mm:
+            scale_factor = projector_height_mm / (projector_height_mm - thickness_mm)
+            pts[:, 0] = projector_pos_x_mm + (pts[:, 0] - projector_pos_x_mm) * scale_factor
+            pts[:, 1] = projector_pos_y_mm + (pts[:, 1] - projector_pos_y_mm) * scale_factor
 
-    pts_homo = pts.reshape(-1, 1, 2)
-    projected = cv2.perspectiveTransform(pts_homo, H_WORLD_TO_PROJECTOR)
-    return projected.reshape(-1, 2)
+        pts_homo = pts.reshape(-1, 1, 2)
+        projected = cv2.perspectiveTransform(pts_homo, H_WORLD_TO_PROJECTOR)
+        return projected.reshape(-1, 2)
+    except Exception as e:
+        return np.empty((0, 2), dtype=np.float32)
 
 
 # ============================================================
@@ -167,20 +195,50 @@ def load_fallback_timber():
         try:
             with open(latest_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return {
-                    "source": os.path.basename(latest_file),
-                    "timber_id": data.get("timber_id", 1),
-                    "length_mm": data.get("length_mm", 0.0),
-                    "width_mm": data.get("width_mm", 0.0),
-                    "thickness_mm": float(data.get("timber_thickness_mm", 0.0)),
-                    "contour_mm": data.get("contour_mm", []),
-                    "corners_mm": data.get("corners_mm", []),
-                    "defects": data.get("defects", []),
-                    "cut_geo": [],
-                    "mill_geo": [],
-                    "points_geo": [],
-                    "labels": []
-                }
+
+                # Check if multi-timber JSON
+                if "timbers" in data and isinstance(data["timbers"], list) and len(data["timbers"]) > 0:
+                    contours = []
+                    corners = []
+                    defects = []
+                    thick = 0.0
+                    for t in data["timbers"]:
+                        if "contour_mm" in t:
+                            contours.append(t["contour_mm"])
+                        if "corners_mm" in t:
+                            corners.append(t["corners_mm"])
+                        if "defects" in t:
+                            defects.extend(t["defects"])
+                        if thick == 0.0 and "timber_thickness_mm" in t:
+                            thick = float(t.get("timber_thickness_mm", 0.0))
+
+                    return {
+                        "source": os.path.basename(latest_file),
+                        "timber_id": "Multi",
+                        "thickness_mm": thick,
+                        "timber_contour": contours,
+                        "corners_mm": corners,
+                        "defects": defects,
+                        "cut_geo": [],
+                        "mill_geo": [],
+                        "points_geo": [],
+                        "labels": []
+                    }
+                else:
+                    return {
+                        "source": os.path.basename(latest_file),
+                        "timber_id": data.get("timber_id", 1),
+                        "length_mm": data.get("length_mm", 0.0),
+                        "width_mm": data.get("width_mm", 0.0),
+                        "thickness_mm": float(data.get("timber_thickness_mm", 0.0)),
+                        "contour_mm": data.get("contour_mm", []),
+                        "corners_mm": data.get("corners_mm", []),
+                        "defects": data.get("defects", []),
+                        "cut_geo": [],
+                        "mill_geo": [],
+                        "points_geo": [],
+                        "labels": []
+                    }
         except Exception as e:
             print(f"Error reading fallback JSON: {e}")
     return {
@@ -290,9 +348,6 @@ def socket_server_thread():
             time.sleep(0.5)
 
 
-# Start TCP server in background
-srv_thread = threading.Thread(target=socket_server_thread, daemon=True)
-srv_thread.start()
 
 
 # ============================================================
@@ -311,27 +366,38 @@ def render_frame(data, is_connected, packet_count, last_time):
     label_scale = float(data.get("label_scale", data.get("text_size", DEFAULT_LABEL_SCALE)))
     label_th_px = int(data.get("label_thickness", DEFAULT_LABEL_THICKNESS))
 
-    # 1. Base Timber Contour
-    contour_raw = data.get("contour_mm") or data.get("timber_contour") or data.get("main_border")
+    # 1. Base Timber Contour(s)
+    contour_raw = data.get("contour_mm") or data.get("timber_contour") or data.get("main_border") or data.get("timbers")
     timber_color_raw = data.get("timber_color", (255, 255, 255))
     timber_bgr = parse_color(timber_color_raw, default_bgr=(255, 255, 255))
 
-    if contour_raw and len(contour_raw) >= 3:
-        pts_px = world_to_projector(contour_raw, offset_x_mm, offset_y_mm, timber_thickness_mm)
-        pts_int = np.round(pts_px).astype(np.int32).reshape(-1, 1, 2)
-        cv2.polylines(canvas, [pts_int], True, timber_bgr, max(1, timber_th_px), cv2.LINE_AA)
+    if isinstance(contour_raw, list) and len(contour_raw) > 0 and isinstance(contour_raw[0], dict) and "contour_mm" in contour_raw[0]:
+        contours_to_draw = [t["contour_mm"] for t in contour_raw if "contour_mm" in t]
+    else:
+        contours_to_draw = normalize_to_contour_list(contour_raw)
+
+    for contour in contours_to_draw:
+        if contour and len(contour) >= 3:
+            pts_px = world_to_projector(contour, offset_x_mm, offset_y_mm, timber_thickness_mm)
+            if len(pts_px) >= 3:
+                pts_int = np.round(pts_px).astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(canvas, [pts_int], True, timber_bgr, max(1, timber_th_px), cv2.LINE_AA)
 
     # 2. Corners (if present)
     corners_raw = data.get("corners_mm") or data.get("timber_corners")
-    if corners_raw and len(corners_raw) >= 3:
-        c_px = world_to_projector(corners_raw, offset_x_mm, offset_y_mm, timber_thickness_mm)
-        for i, pt in enumerate(c_px):
-            px, py = int(round(pt[0])), int(round(pt[1]))
-            cv2.circle(canvas, (px, py), 4, timber_bgr, -1, cv2.LINE_AA)
-            cv2.putText(
-                canvas, f"C{i+1}", (px + 6, py - 6),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, timber_bgr, 1, cv2.LINE_AA
-            )
+    if corners_raw:
+        corners_list = normalize_to_contour_list(corners_raw)
+        for timber_idx, corners in enumerate(corners_list):
+            if corners and len(corners) >= 3:
+                c_px = world_to_projector(corners, offset_x_mm, offset_y_mm, timber_thickness_mm)
+                prefix = f"T{timber_idx+1}_" if len(corners_list) > 1 else ""
+                for i, pt in enumerate(c_px):
+                    px, py = int(round(pt[0])), int(round(pt[1]))
+                    cv2.circle(canvas, (px, py), 4, timber_bgr, -1, cv2.LINE_AA)
+                    cv2.putText(
+                        canvas, f"{prefix}C{i+1}", (px + 6, py - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, timber_bgr, 1, cv2.LINE_AA
+                    )
 
     # 3. Defect Marks (from scanner)
     defects_raw = data.get("defects", [])
@@ -428,100 +494,102 @@ def render_frame(data, is_connected, packet_count, last_time):
     return canvas
 
 
-# ============================================================
-# PROJECTOR WINDOW CREATION
-# ============================================================
+def start_live_viewer():
+    global timber_thickness_mm, offset_x_mm, offset_y_mm, step_mm, SHOW_HUD
 
-cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-cv2.moveWindow(WINDOW_NAME, PROJECTOR_SCREEN_ORIGIN_X, PROJECTOR_SCREEN_ORIGIN_Y)
-cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    # Start TCP server in background
+    srv_thread = threading.Thread(target=socket_server_thread, daemon=True)
+    srv_thread.start()
 
-print("\n" + "=" * 65)
-print("eWoodX Real-Time Projector Live Viewer Running")
-print(f"  Resolution:      {PROJECTOR_WIDTH} x {PROJECTOR_HEIGHT}")
-print(f"  Window Position: X={PROJECTOR_SCREEN_ORIGIN_X}, Y={PROJECTOR_SCREEN_ORIGIN_Y}")
-print(f"  TCP Server:      {SERVER_HOST}:{SERVER_PORT}")
-print(f"  Base Thickness:  {timber_thickness_mm:.1f} mm")
-print("=" * 65)
-print("Interactive Controls:")
-print("  T / G           : Increase / Decrease Thickness (+/- 1.0 mm)")
-print("  Shift+T / G     : Increase / Decrease Thickness (+/- 5.0 mm)")
-print("  0 (Zero)        : Reset Thickness to 0.0 mm (Table Plane)")
-print("  W / S / A / D   : Nudge Real-World Offsets Y / X (+/- step)")
-print("  + / -           : Change Nudge Step (0.1, 0.5, 1.0, 2.0, 5.0 mm)")
-print("  R               : Reset Offsets to (0, 0)")
-print("  H               : Toggle HUD Bar")
-print("  ESC / Q         : Exit Viewer")
-print("=" * 65 + "\n")
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.moveWindow(WINDOW_NAME, PROJECTOR_SCREEN_ORIGIN_X, PROJECTOR_SCREEN_ORIGIN_Y)
+    cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    print("\n" + "=" * 65)
+    print("eWoodX Real-Time Projector Live Viewer Running")
+    print(f"  Resolution:      {PROJECTOR_WIDTH} x {PROJECTOR_HEIGHT}")
+    print(f"  Window Position: X={PROJECTOR_SCREEN_ORIGIN_X}, Y={PROJECTOR_SCREEN_ORIGIN_Y}")
+    print(f"  TCP Server:      {SERVER_HOST}:{SERVER_PORT}")
+    print(f"  Base Thickness:  {timber_thickness_mm:.1f} mm")
+    print("=" * 65)
+    print("Interactive Controls:")
+    print("  T / G           : Increase / Decrease Thickness (+/- 1.0 mm)")
+    print("  Shift+T / G     : Increase / Decrease Thickness (+/- 5.0 mm)")
+    print("  0 (Zero)        : Reset Thickness to 0.0 mm (Table Plane)")
+    print("  W / S / A / D   : Nudge Real-World Offsets Y / X (+/- step)")
+    print("  + / -           : Change Nudge Step (0.1, 0.5, 1.0, 2.0, 5.0 mm)")
+    print("  R               : Reset Offsets to (0, 0)")
+    print("  H               : Toggle HUD Bar")
+    print("  ESC / Q         : Exit Viewer")
+    print("=" * 65 + "\n")
+
+    while True:
+        cur_data, is_connected, packet_count, last_time = state.get_snapshot()
+
+        # Check connection timeout (if no packet in 3 seconds, mark disconnected)
+        if is_connected and (time.time() - last_time > 3.0):
+            state.set_disconnected()
+            is_connected = False
+
+        frame = render_frame(cur_data, is_connected, packet_count, last_time)
+        cv2.imshow(WINDOW_NAME, frame)
+
+        key = cv2.waitKeyEx(16)  # ~60 FPS update rate
+
+        if key in (27, ord('q'), ord('Q')):
+            break
+
+        # Thickness adjustments
+        elif key == ord('t'):
+            timber_thickness_mm += 1.0
+            print(f"Thickness: {timber_thickness_mm:.1f} mm")
+        elif key == ord('T'):
+            timber_thickness_mm += 5.0
+            print(f"Thickness: {timber_thickness_mm:.1f} mm")
+        elif key == ord('g'):
+            timber_thickness_mm = max(0.0, timber_thickness_mm - 1.0)
+            print(f"Thickness: {timber_thickness_mm:.1f} mm")
+        elif key == ord('G'):
+            timber_thickness_mm = max(0.0, timber_thickness_mm - 5.0)
+            print(f"Thickness: {timber_thickness_mm:.1f} mm")
+        elif key == ord('0'):
+            timber_thickness_mm = 0.0
+            print("Thickness reset to 0.0 mm (Table level)")
+
+        # Offsets nudging
+        elif key in (2490368, ord('w'), ord('W')):
+            offset_y_mm += step_mm
+        elif key in (2621440, ord('s'), ord('S')):
+            offset_y_mm -= step_mm
+        elif key in (2555904, ord('d'), ord('D')):
+            offset_x_mm += step_mm
+        elif key in (2424832, ord('a'), ord('A')):
+            offset_x_mm -= step_mm
+
+        # Step size
+        elif key in (ord('+'), ord('='), ord(']')):
+            steps = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
+            idx = min(len(steps) - 1, steps.index(step_mm) + 1 if step_mm in steps else 2)
+            step_mm = steps[idx]
+            print(f"Nudge step: {step_mm:.2f} mm")
+        elif key in (ord('-'), ord('_'), ord('[')):
+            steps = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
+            idx = max(0, steps.index(step_mm) - 1 if step_mm in steps else 2)
+            step_mm = steps[idx]
+            print(f"Nudge step: {step_mm:.2f} mm")
+
+        # Reset
+        elif key in (ord('r'), ord('R')):
+            offset_x_mm = 0.0
+            offset_y_mm = 0.0
+            print("Offsets reset to X=0.0 mm, Y=0.0 mm")
+
+        # Toggle HUD
+        elif key in (ord('h'), ord('H')):
+            SHOW_HUD = not SHOW_HUD
+
+    cv2.destroyAllWindows()
 
 
-# ============================================================
-# MAIN DISPLAY LOOP
-# ============================================================
-
-while True:
-    cur_data, is_connected, packet_count, last_time = state.get_snapshot()
-
-    # Check connection timeout (if no packet in 3 seconds, mark disconnected)
-    if is_connected and (time.time() - last_time > 3.0):
-        state.set_disconnected()
-        is_connected = False
-
-    frame = render_frame(cur_data, is_connected, packet_count, last_time)
-    cv2.imshow(WINDOW_NAME, frame)
-
-    key = cv2.waitKeyEx(16)  # ~60 FPS update rate
-
-    if key in (27, ord('q'), ord('Q')):
-        break
-
-    # Thickness adjustments
-    elif key == ord('t'):
-        timber_thickness_mm += 1.0
-        print(f"Thickness: {timber_thickness_mm:.1f} mm")
-    elif key == ord('T'):
-        timber_thickness_mm += 5.0
-        print(f"Thickness: {timber_thickness_mm:.1f} mm")
-    elif key == ord('g'):
-        timber_thickness_mm = max(0.0, timber_thickness_mm - 1.0)
-        print(f"Thickness: {timber_thickness_mm:.1f} mm")
-    elif key == ord('G'):
-        timber_thickness_mm = max(0.0, timber_thickness_mm - 5.0)
-        print(f"Thickness: {timber_thickness_mm:.1f} mm")
-    elif key == ord('0'):
-        timber_thickness_mm = 0.0
-        print("Thickness reset to 0.0 mm (Table level)")
-
-    # Offsets nudging
-    elif key in (2490368, ord('w'), ord('W')):
-        offset_y_mm += step_mm
-    elif key in (2621440, ord('s'), ord('S')):
-        offset_y_mm -= step_mm
-    elif key in (2555904, ord('d'), ord('D')):
-        offset_x_mm += step_mm
-    elif key in (2424832, ord('a'), ord('A')):
-        offset_x_mm -= step_mm
-
-    # Step size
-    elif key in (ord('+'), ord('='), ord(']')):
-        steps = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
-        idx = min(len(steps) - 1, steps.index(step_mm) + 1 if step_mm in steps else 2)
-        step_mm = steps[idx]
-        print(f"Nudge step: {step_mm:.2f} mm")
-    elif key in (ord('-'), ord('_'), ord('[')):
-        steps = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
-        idx = max(0, steps.index(step_mm) - 1 if step_mm in steps else 2)
-        step_mm = steps[idx]
-        print(f"Nudge step: {step_mm:.2f} mm")
-
-    # Reset
-    elif key in (ord('r'), ord('R')):
-        offset_x_mm = 0.0
-        offset_y_mm = 0.0
-        print("Offsets reset to X=0.0 mm, Y=0.0 mm")
-
-    # Toggle HUD
-    elif key in (ord('h'), ord('H')):
-        SHOW_HUD = not SHOW_HUD
-
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    start_live_viewer()

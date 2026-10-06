@@ -207,15 +207,17 @@ def main():
             add_workspace_to_model(model, data)
             workspace_added = True
 
-        ok = add_timber_to_model(model, data, index=i)
-        if ok:
-            t_id = data.get("timber_id", i + 1)
-            l = data.get("length_mm", 0.0)
-            w = data.get("width_mm", 0.0)
-            area = data.get("surface_area_cm2", data.get("surface_area_mm2", 0.0) / 100.0)
-            pts_cnt = len(data.get("contour_mm", data.get("corners_mm", [])))
-            print(f"  [+] Timber {t_id:02d}: {l:.1f} x {w:.1f} mm | Area: {area:.1f} cm² | Contour: {pts_cnt} points ({os.path.basename(json_path)})")
-            success_count += 1
+        timbers_to_export = data.get("timbers", [data]) if isinstance(data.get("timbers"), list) else [data]
+        for t_data in timbers_to_export:
+            ok = add_timber_to_model(model, t_data, index=success_count)
+            if ok:
+                t_id = t_data.get("timber_id", success_count + 1)
+                l = t_data.get("length_mm", 0.0)
+                w = t_data.get("width_mm", 0.0)
+                area = t_data.get("surface_area_cm2", t_data.get("surface_area_mm2", 0.0) / 100.0)
+                pts_cnt = len(t_data.get("contour_mm", t_data.get("corners_mm", [])))
+                print(f"  [+] Timber {t_id if isinstance(t_id, str) else f'{t_id:02d}'}: {l:.1f} x {w:.1f} mm | Area: {area:.1f} cm² | Contour: {pts_cnt} points ({os.path.basename(json_path)})")
+                success_count += 1
 
     if success_count == 0:
         print("\nNo valid timber data exported.")
