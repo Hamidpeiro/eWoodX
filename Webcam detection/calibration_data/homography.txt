@@ -1,16 +1,11 @@
-WORKSPACE HOMOGRAPHY CALIBRATION
+ANGETUBE EXTRINSIC CALIBRATION REPORT
 ==================================================
 
-Workspace image: c:\Users\hamid\Documents\GitHub\eEoodX\Webcam detection\calibration_data\workspace_photos\workspace.jpg
-
-Detected marker IDs:
-[0, 1, 2, 3]
-
-Pixel points (outer marker corners):
-[[ 866. 1723.]
- [3195. 1598.]
- [ 864.  424.]
- [3072.  300.]]
+Pixel points:
+[[ 816. 1802.]
+ [3151. 1781.]
+ [ 894.  510.]
+ [3074.  494.]]
 
 World points (mm):
 [[   0.    0.]
@@ -18,13 +13,13 @@ World points (mm):
  [   0. 1040.]
  [1780. 1040.]]
 
-Homography matrix H:
-[[ 8.2728211454e-01 -1.2737215005e-03 -7.1423168905e+02]
- [-4.3910282064e-02 -8.1813637543e-01  1.4476752791e+03]
- [ 4.3674109767e-06  4.2912262869e-05  1.0000000000e+00]]
+Homography Matrix (H):
+[[   0.8374546104    0.0505584053 -774.4692083632]
+ [  -0.0074466145   -0.8279926175 1498.119134255 ]
+ [  -0.0000009015    0.0000566059    1.          ]]
 
-Reprojection errors (mm):
-Marker 1: 0.000000 mm
-Marker 0: 0.000000 mm
-Marker 2: 0.000000 mm
-Marker 3: 0.000000 mm
+Reprojection Errors (mm):
+Point 0: 0.00000000 mm
+Point 1: 0.00000000 mm
+Point 2: 0.00000000 mm
+Point 3: 0.00000000 mm

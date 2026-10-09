@@ -29,6 +29,11 @@ How to use in Grasshopper:
      - color_rgb       / colors_rgb        : DataTree of System.Drawing.Color on branch {i}
      - color_hex       / colors_hex        : DataTree of hex string on branch {i}
      - defects                             : DataTree of defect Point3d on branch {i}
+     - drawing_curves  / hand_drawn_shapes : DataTree of detected shape PolylineCurves (ellipse/rect/tri)
+     - drawing_centers                     : DataTree of detected shape center Point3d (mm)
+     - drawing_classes                     : DataTree of class strings ('ellipse', 'rectangle', 'triangle')
+     - drawing_sizes                       : DataTree of shape sizes in mm (e.g. '120.5x80.2mm')
+     - drawing_confidences                 : DataTree of YOLO detection confidence scores (0.0 - 1.0)
      - table_boundary                      : PolylineCurve of physical table
      - markers_corners                     : DataTree of ArUco marker PolylineCurves
      - file_path       / file_paths        : DataTree of file path on branch {i}
@@ -82,13 +87,16 @@ def make_grafted_tree(items_per_timber):
 
 
 def find_default_capture_dir():
-    """Locate the captures folder."""
+    """Locate the captures folder across common workspace directories."""
     search_dirs = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "sample_output", "captures") if "__file__" in globals() else "",
-        os.path.expanduser(r"~\Documents\GitHub\eEoodX\Webcam detection\sample_output\captures"),
-        os.path.expanduser(r"~\Documents\GitHub\eEoodX\sample_output\captures"),
-        r"C:\Users\hamid\Documents\GitHub\eEoodX\Webcam detection\sample_output\captures",
+        r"C:\Users\hamid\Documents\GitHub\eWoodX\Webcam detection\sample_output\captures",
+        r"C:\Users\hamid\Documents\GitHub\eWoodX\Webcam detection\sample_output",
+        os.path.expanduser(r"~\Documents\GitHub\eWoodX\Webcam detection\sample_output\captures"),
+        os.path.expanduser(r"~\Documents\GitHub\eWoodX\sample_output\captures"),
+        os.path.expanduser(r"~\Documents\GitHub\eWoodX\sample_output"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "sample_output", "captures") if "__file__" in globals() and __file__ else "",
         r".\sample_output\captures",
+        r".\captures"
     ]
     for s_dir in search_dirs:
         if s_dir and os.path.isdir(s_dir):
@@ -105,10 +113,13 @@ def collect_json_files(input_paths):
     """Resolve input paths (folder, list of files, single file, or empty) into list of JSON files."""
     files_to_load = []
 
-    if input_paths is None or (isinstance(input_paths, (list, tuple)) and len(input_paths) == 0):
+    if input_paths is None or (isinstance(input_paths, (list, tuple)) and len(input_paths) == 0) or str(input_paths).strip() == "":
         cap_dir = find_default_capture_dir()
         if cap_dir:
+            # Look in captures directly or in subfolder captures
             found = glob.glob(os.path.join(cap_dir, "timber_*_measurement.json"))
+            if not found and os.path.isdir(os.path.join(cap_dir, "captures")):
+                found = glob.glob(os.path.join(cap_dir, "captures", "timber_*_measurement.json"))
             if not found:
                 found = glob.glob(os.path.join(cap_dir, "*.json"))
             found.sort(key=natural_sort_key)
@@ -120,9 +131,17 @@ def collect_json_files(input_paths):
                 continue
             p_str = str(p).strip().strip('"').strip("'")
             if os.path.isdir(p_str):
+                # 1. Look for timber_*_measurement.json
                 found = glob.glob(os.path.join(p_str, "timber_*_measurement.json"))
+                # 2. Look in subfolder 'captures'
+                if not found and os.path.isdir(os.path.join(p_str, "captures")):
+                    found = glob.glob(os.path.join(p_str, "captures", "timber_*_measurement.json"))
+                # 3. Look for any json in folder
                 if not found:
                     found = glob.glob(os.path.join(p_str, "*.json"))
+                # 4. Recursive search
+                if not found:
+                    found = glob.glob(os.path.join(p_str, "**", "*.json"), recursive=True)
                 found.sort(key=natural_sort_key)
                 files_to_load.extend(found)
             elif os.path.isfile(p_str):
@@ -166,6 +185,53 @@ def parse_single_timber(data, file_path):
     c_hex = data.get("color_hex", f"#{r:02x}{g:02x}{b:02x}")
     c_rgb = sd.Color.FromArgb(r, g, b) if sd is not None else (r, g, b)
 
+    # Hand-drawn YOLO shapes
+    drawing_crvs = []
+    drawing_centers_pts = []
+    drawing_cls_names = []
+    drawing_conf_vals = []
+    drawing_sizes = []
+
+    raw_drawings = data.get("hand_drawn_shapes", [])
+    for drw in raw_drawings:
+        c_name = drw.get("class_name", "unknown")
+        conf = float(drw.get("confidence", 0.0))
+        c_mm = drw.get("center_mm", [0.0, 0.0])
+        corners_mm = drw.get("bbox_corners_mm", [])
+
+        # Calculate bounding dimensions (mm)
+        w_d_mm = 0.0
+        h_d_mm = 0.0
+        if len(corners_mm) >= 4:
+            dx1 = corners_mm[1][0] - corners_mm[0][0]
+            dy1 = corners_mm[1][1] - corners_mm[0][1]
+            w_d_mm = (dx1**2 + dy1**2)**0.5
+            dx2 = corners_mm[2][0] - corners_mm[1][0]
+            dy2 = corners_mm[2][1] - corners_mm[1][1]
+            h_d_mm = (dx2**2 + dy2**2)**0.5
+
+        # Shape geometry points (ellipse curve, rectangle, triangle)
+        shape_pts_mm = drw.get("shape_points_mm") or drw.get("bbox_corners_mm", [])
+
+        if IN_RHINO and rg is not None:
+            drawing_centers_pts.append(rg.Point3d(float(c_mm[0]), float(c_mm[1]), 0.0))
+            if len(shape_pts_mm) >= 3:
+                d_pts = [rg.Point3d(float(p[0]), float(p[1]), 0.0) for p in shape_pts_mm]
+                d_pts.append(d_pts[0])  # close polyline
+                drawing_crvs.append(rg.Polyline(d_pts).ToPolylineCurve())
+            else:
+                drawing_crvs.append(None)
+        else:
+            drawing_centers_pts.append(c_mm)
+            drawing_crvs.append(shape_pts_mm)
+
+        dim_info = drw.get("dimensions_mm", {})
+        size_str = dim_info.get("size_str", f"{w_d_mm:.1f}x{h_d_mm:.1f}mm")
+
+        drawing_cls_names.append(c_name)
+        drawing_conf_vals.append(conf)
+        drawing_sizes.append(size_str)
+
     # Geometry
     contour_crv = None
     corners_pts = []
@@ -175,18 +241,24 @@ def parse_single_timber(data, file_path):
         raw_contour = data.get("contour_mm", data.get("corners_mm", []))
         if raw_contour and len(raw_contour) >= 3:
             pts = [rg.Point3d(float(p[0]), float(p[1]), 0.0) for p in raw_contour]
-            pts.append(pts[0])  # Close polyline
+            pts.append(pts[0])  # close polyline
             contour_crv = rg.Polyline(pts).ToPolylineCurve()
 
-        raw_corners = data.get("corners_mm", [])
-        corners_pts = [rg.Point3d(float(p[0]), float(p[1]), 0.0) for p in raw_corners]
+        for c_pt in data.get("corners_mm", []):
+            if len(c_pt) >= 2:
+                corners_pts.append(rg.Point3d(float(c_pt[0]), float(c_pt[1]), 0.0))
 
         for d in data.get("defects", []):
-            dx = float(d.get("x_mm", d.get("x", 0.0)))
-            dy = float(d.get("y_mm", d.get("y", 0.0)))
-            defect_pts.append(rg.Point3d(dx, dy, 0.0))
+            if isinstance(d, dict):
+                dx = float(d.get("center_mm", [0, 0])[0])
+                dy = float(d.get("center_mm", [0, 0])[1])
+                defect_pts.append(rg.Point3d(dx, dy, 0.0))
+            elif isinstance(d, (list, tuple)) and len(d) >= 2:
+                defect_pts.append(rg.Point3d(float(d[0]), float(d[1]), 0.0))
     else:
-        contour_crv = data.get("contour_mm", [])
+        raw_contour = data.get("contour_mm", data.get("corners_mm", []))
+        if raw_contour and len(raw_contour) >= 3:
+            contour_crv = raw_contour
         corners_pts = data.get("corners_mm", [])
         defect_pts = data.get("defects", [])
 
@@ -202,9 +274,15 @@ def parse_single_timber(data, file_path):
         "contour": contour_crv,
         "corners": corners_pts,
         "defects": defect_pts,
+        "drawing_curves": drawing_crvs,
+        "drawing_centers": drawing_centers_pts,
+        "drawing_classes": drawing_cls_names,
+        "drawing_confidences": drawing_conf_vals,
+        "drawing_sizes": drawing_sizes,
         "raw": data,
         "file": file_path
     }
+
 
 
 # ============================================================
@@ -217,6 +295,12 @@ if raw_input is None:
     raw_input = globals().get("json_path", None)
 if raw_input is None:
     raw_input = globals().get("folder", None)
+if raw_input is None:
+    raw_input = globals().get("path", None)
+if raw_input is None:
+    raw_input = globals().get("file", None)
+if raw_input is None:
+    raw_input = globals().get("json", None)
 
 json_files = collect_json_files(raw_input)
 
@@ -232,6 +316,11 @@ list_sides = []
 list_colors_rgb = []
 list_colors_hex = []
 list_defects = []
+list_drawing_curves = []
+list_drawing_centers = []
+list_drawing_classes = []
+list_drawing_sizes = []
+list_drawing_confidences = []
 list_files = []
 list_raw = []
 first_data = None
@@ -268,6 +357,11 @@ for f_path in json_files:
                 list_colors_rgb.append(res["color_rgb"])
                 list_colors_hex.append(res["color_hex"])
                 list_defects.append(res["defects"])
+                list_drawing_curves.append(res["drawing_curves"])
+                list_drawing_centers.append(res["drawing_centers"])
+                list_drawing_classes.append(res["drawing_classes"])
+                list_drawing_sizes.append(res["drawing_sizes"])
+                list_drawing_confidences.append(res["drawing_confidences"])
                 list_files.append(f_path)
                 list_raw.append(t_data)
     except Exception as e:
@@ -317,6 +411,11 @@ if sel_idx is not None and len(list_contours) > 0:
             list_colors_rgb = [list_colors_rgb[i]]
             list_colors_hex = [list_colors_hex[i]]
             list_defects = [list_defects[i]]
+            list_drawing_curves = [list_drawing_curves[i]]
+            list_drawing_centers = [list_drawing_centers[i]]
+            list_drawing_classes = [list_drawing_classes[i]]
+            list_drawing_sizes = [list_drawing_sizes[i]]
+            list_drawing_confidences = [list_drawing_confidences[i]]
             list_files = [list_files[i]]
             list_raw = [list_raw[i]]
     except Exception:
@@ -334,6 +433,11 @@ side_lengths_mm = make_grafted_tree(list_sides)
 color_rgb = colors_rgb = make_grafted_tree(list_colors_rgb)
 color_hex = colors_hex = make_grafted_tree(list_colors_hex)
 defects = make_grafted_tree(list_defects)
+drawing_curves = hand_drawn_shapes = make_grafted_tree(list_drawing_curves)
+drawing_centers = make_grafted_tree(list_drawing_centers)
+drawing_classes = make_grafted_tree(list_drawing_classes)
+drawing_sizes = make_grafted_tree(list_drawing_sizes)
+drawing_confidences = make_grafted_tree(list_drawing_confidences)
 file_path = file_paths = make_grafted_tree(list_files)
 raw_data = make_grafted_tree(list_raw)
 markers_corners = make_grafted_tree(markers_corners_list)
@@ -343,7 +447,9 @@ if len(json_files) == 0:
     info = "No timber JSON files found in specified path or captures directory."
 else:
     info_lines = [f"Loaded {len(json_files)} timber JSON file(s) (Grafted into DataTrees):"]
-    for i, (t_id, l, w, th, fn) in enumerate(zip(list_ids, list_lengths, list_widths, list_thicknesses, list_files)):
+    for i, (t_id, l, w, th, fn, drw_cls) in enumerate(zip(list_ids, list_lengths, list_widths, list_thicknesses, list_files, list_drawing_classes)):
         fname = os.path.basename(fn)
-        info_lines.append(f" {{{i}}} Timber #{t_id}: {l:.1f} x {w:.1f} mm, T={th:.1f}mm ({fname})")
+        drw_str = f" | Drawings: {', '.join(drw_cls)}" if drw_cls else ""
+        info_lines.append(f" {{{i}}} Timber #{t_id}: {l:.1f} x {w:.1f} mm, T={th:.1f}mm{drw_str} ({fname})")
     info = "\n".join(info_lines)
+

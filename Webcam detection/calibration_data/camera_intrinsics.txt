@@ -1,16 +1,23 @@
-CAMERA INTRINSIC CALIBRATION REPORT
+ANGETUBE INTRINSIC CALIBRATION REPORT
 ==================================================
 
-Calibration Model: OpenCV Fisheye
-Calibration File:  C:\Users\hamid\Documents\GitHub\eEoodX\Webcam detection\calibration_data\camera_intrinsics.npz
-Accepted Photos:   15
-Image Resolution:  3840 x 2160
-RMS Error:         0.347983 px
+Calibration model: OpenCV Fisheye
+Checkerboard inner corners: (13, 8)
+Checkerboard square size: 20.000000 mm
+Accepted images: 20
+Total images: 21
+Image resolution: 3840 x 2160
+RMS reprojection error: 0.39000132 px
+Fisheye balance: 0.0
+Fisheye FOV scale: 1.0
+Fisheye CHECK_COND: True
+Fisheye RECOMPUTE_EXTRINSIC: True
+Fisheye FIX_SKEW: True
 
 Camera Matrix (K):
-[[3.12550807e+03 0.00000000e+00 1.95915006e+03]
- [0.00000000e+00 3.12541664e+03 1.23392723e+03]
- [0.00000000e+00 0.00000000e+00 1.00000000e+00]]
+[[3171.52729371    0.         1964.94988005]
+ [   0.         3171.26666261 1221.00011777]
+ [   0.            0.            1.        ]]
 
 Distortion Coefficients (D):
-[  0.28520552  -0.15290691   4.9371759  -15.11781473]
+[ 0.25709844  0.44960725  0.44467853 -3.82053452]

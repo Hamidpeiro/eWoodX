@@ -25,7 +25,7 @@ CAMERA_INDEX = 1
 # Capture resolution (e.g., 3840x2160 4K, 1920x1080 FHD)
 IMAGE_WIDTH = 3840
 IMAGE_HEIGHT = 2160
-CAMERA_FPS = 30
+CAMERA_FPS = 1
 CAMERA_FOURCC = "MJPG"
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ CAMERA_FOURCC = "MJPG"
 #   CAMERA_FOCUS_MODE: "manual" or "auto"
 #   CAMERA_FOCUS_VALUE: Integer value (0 to 1023, e.g. 350, 450, 500)
 CAMERA_FOCUS_MODE = "manual"
-CAMERA_FOCUS_VALUE = 380
+CAMERA_FOCUS_VALUE = 370
 
 # Zoom control:
 #   Float zoom multiplier: 1.0 = full wide-angle (no zoom), 1.5 = 1.5x zoom, 2.0 = 2.0x zoom
@@ -56,8 +56,8 @@ CAMERA_EXPOSURE_MODE = "auto"
 CAMERA_EXPOSURE_VALUE = -5
 
 # Image adjustments:
-CAMERA_BRIGHTNESS = 11
-CAMERA_CONTRAST = 26
+CAMERA_BRIGHTNESS = 7
+CAMERA_CONTRAST = 30
 CAMERA_SATURATION = 32      # 1 - 64 (default 32)
 CAMERA_SHARPNESS = 32       # 1 - 64 (default 32)
 CAMERA_GAIN = 0             # 0 - 15 (default 0)

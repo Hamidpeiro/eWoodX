@@ -1,6 +1,6 @@
 {
-  "timber_id": 8,
-  "source_image": "c:\\Users\\hamid\\Documents\\GitHub\\eEoodX\\Webcam detection\\sample_output\\captures\\timber_08.jpg",
+  "capture_id": 8,
+  "source_image": "C:\\Users\\hamid\\Documents\\GitHub\\eWoodX\\Webcam detection\\sample_output\\captures\\timber_08.jpg",
   "reference_frame": {
     "origin_marker_id": 1,
     "origin_mm": [
@@ -32,81 +32,81 @@
         0.0
       ],
       "center_mm": [
-        74.17,
-        72.93
+        75.04,
+        72.4
       ],
       "corners_mm": [
         [
-          147.53,
-          -2.34
+          148.7,
+          -2.9
         ],
         [
           0.0,
           0.0
         ],
         [
-          0.23,
-          148.04
+          2.21,
+          148.77
         ],
         [
-          148.87,
-          147.15
+          149.36,
+          145.2
         ]
       ]
     },
     "0": {
       "outer_corner_mm": [
         1780.0,
-        0.0
+        -0.0
       ],
       "center_mm": [
-        1706.02,
-        74.44
+        1705.05,
+        74.73
       ],
       "corners_mm": [
         [
           1780.0,
-          0.0
+          -0.0
         ],
         [
-          1632.05,
-          0.14
+          1632.69,
+          0.61
         ],
         [
-          1632.26,
-          149.8
+          1630.2,
+          150.13
         ],
         [
-          1779.73,
-          148.92
+          1777.39,
+          149.64
         ]
       ]
     },
     "2": {
       "outer_corner_mm": [
-        0.0,
+        -0.0,
         1040.0
       ],
       "center_mm": [
-        73.83,
-        964.81
+        73.57,
+        964.17
       ],
       "corners_mm": [
         [
-          147.51,
-          890.16
+          146.88,
+          889.42
         ],
         [
-          0.58,
-          890.96
+          0.66,
+          891.01
         ],
         [
-          0.0,
+          -0.0,
           1040.0
         ],
         [
-          147.17,
-          1039.18
+          146.83,
+          1037.64
         ]
       ]
     },
@@ -116,21 +116,21 @@
         1040.0
       ],
       "center_mm": [
-        1704.67,
-        964.44
+        1706.07,
+        963.29
       ],
       "corners_mm": [
         [
-          1778.98,
-          890.08
+          1780.31,
+          888.74
         ],
         [
-          1630.66,
-          889.36
+          1632.51,
+          887.79
         ],
         [
-          1629.01,
-          1039.41
+          1631.59,
+          1038.04
         ],
         [
           1780.0,
@@ -139,75 +139,96 @@
       ]
     }
   },
-  "length_mm": 526.58,
-  "width_mm": 47.44,
-  "surface_area_mm2": 23849.28,
-  "surface_area_cm2": 238.49,
-  "side_lengths_mm": [
-    527.14,
-    47.16,
-    526.03,
-    47.73
+  "timber_count": 1,
+  "timbers": [
+    {
+      "timber_id": 1,
+      "length_mm": 257.37,
+      "width_mm": 120.26,
+      "surface_area_mm2": 29859.36,
+      "surface_area_cm2": 298.59,
+      "side_lengths_mm": [
+        258.33,
+        120.01,
+        256.41,
+        120.51
+      ],
+      "corners_mm": [
+        [
+          895.36,
+          816.06
+        ],
+        [
+          1140.63,
+          734.96
+        ],
+        [
+          1104.57,
+          620.49
+        ],
+        [
+          860.99,
+          700.56
+        ]
+      ],
+      "contour_mm": [
+        [
+          895.64,
+          812.25
+        ],
+        [
+          866.28,
+          717.32
+        ],
+        [
+          866.36,
+          699.1
+        ],
+        [
+          1083.52,
+          628.54
+        ],
+        [
+          1105.07,
+          628.41
+        ],
+        [
+          1137.41,
+          725.69
+        ],
+        [
+          1135.93,
+          735.68
+        ]
+      ],
+      "timber_thickness_mm": 0.0,
+      "color_rgb": {
+        "R": 194,
+        "G": 180,
+        "B": 165
+      },
+      "color_hex": "#c2b4a5",
+      "color_lab": {
+        "L": 188.82,
+        "a": 130.41,
+        "b": 137.37
+      },
+      "defects": [],
+      "hand_drawn_shapes": [],
+      "hand_drawn_shape_count": 0
+    }
   ],
-  "corners_mm": [
-    [
-      735.06,
-      837.54
-    ],
-    [
-      1216.22,
-      622.21
-    ],
-    [
-      1197.56,
-      578.91
-    ],
-    [
-      717.19,
-      793.28
-    ]
-  ],
-  "contour_mm": [
-    [
-      720.42,
-      795.05
-    ],
-    [
-      1188.62,
-      583.09
-    ],
-    [
-      1198.13,
-      584.18
-    ],
-    [
-      1210.68,
-      609.35
-    ],
-    [
-      1208.51,
-      625.66
-    ],
-    [
-      743.37,
-      833.37
-    ],
-    [
-      734.54,
-      832.22
-    ]
-  ],
-  "timber_thickness_mm": 0.0,
-  "color_rgb": {
-    "R": 123,
-    "G": 95,
-    "B": 107
+  "handdraw_detection": {
+    "model": "C:\\Users\\hamid\\Documents\\GitHub\\eWoodX\\Webcam detection\\train\\weights\\best.pt",
+    "device": "cpu",
+    "confidence_threshold": 0.05,
+    "image_size": 640,
+    "iou_threshold": 0.45,
+    "classes": {
+      "0": "ellipse",
+      "1": "rectangle",
+      "2": "triangle"
+    }
   },
-  "color_hex": "#7b5f6b",
-  "color_lab": {
-    "L": 111.07,
-    "a": 141.34,
-    "b": 125.51
-  },
-  "defects": []
+  "hand_drawn_shape_count": 0
 }

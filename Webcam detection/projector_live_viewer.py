@@ -408,6 +408,50 @@ def render_frame(data, is_connected, packet_count, last_time):
         px, py = int(round(d_px[0])), int(round(d_px[1]))
         cv2.drawMarker(canvas, (px, py), (0, 165, 255), cv2.MARKER_TILTED_CROSS, 14, 2, cv2.LINE_AA)
 
+    # 3b. Hand-Drawn YOLO Shapes (from scanner JSON or live payload)
+    drawings_list = []
+    if "hand_drawn_shapes" in data and isinstance(data["hand_drawn_shapes"], list):
+        drawings_list.extend(data["hand_drawn_shapes"])
+    if "timbers" in data and isinstance(data["timbers"], list):
+        for t in data["timbers"]:
+            if isinstance(t, dict) and "hand_drawn_shapes" in t:
+                drawings_list.extend(t["hand_drawn_shapes"])
+
+    for drw in drawings_list:
+        cls_name = drw.get("class_name", "drawing")
+        t_id = drw.get("timber_id", 1)
+        conf = float(drw.get("confidence", 0.0))
+        shape_geo_mm = drw.get("shape_points_mm") or drw.get("bbox_corners_mm", [])
+        center_mm = drw.get("center_mm", [0, 0])
+
+        # Colors per class: Ellipse (Orange), Rectangle (Magenta), Triangle (Cyan)
+        drw_color = (0, 165, 255)
+        cls_lower = cls_name.lower()
+        if "ellipse" in cls_lower:
+            drw_color = (0, 165, 255)
+        elif "rect" in cls_lower:
+            drw_color = (255, 0, 180)
+        elif "tri" in cls_lower:
+            drw_color = (255, 180, 0)
+
+        # Draw the true geometric curve (ellipse polyline, rectangle, or triangle)
+        if len(shape_geo_mm) >= 3:
+            pts_px = world_to_projector(shape_geo_mm, offset_x_mm, offset_y_mm, timber_thickness_mm)
+            if len(pts_px) >= 3:
+                pts_int = np.round(pts_px).astype(np.int32).reshape(-1, 1, 2)
+                cv2.polylines(canvas, [pts_int], True, drw_color, 2, cv2.LINE_AA)
+
+        if len(center_mm) >= 2:
+            c_px = world_to_projector([center_mm[:2]], offset_x_mm, offset_y_mm, timber_thickness_mm)[0]
+            px, py = int(round(c_px[0])), int(round(c_px[1]))
+            cv2.drawMarker(canvas, (px, py), drw_color, cv2.MARKER_CROSS, 8, 1, cv2.LINE_AA)
+            tag = f"T{t_id}:{cls_name.upper()}" + (f" ({conf:.2f})" if conf > 0 else "")
+            cv2.putText(
+                canvas, tag, (px - 25, py - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.40, drw_color, 1, cv2.LINE_AA
+            )
+
+
     # 4. Milling Geometry (Cyan / Blue / Custom)
     mill_geo = data.get("mill_geo") or data.get("mill") or data.get("milling", [])
     mill_color_raw = data.get("mill_color", (0, 220, 255))
