@@ -65,6 +65,48 @@ def polygon_mask(shape, points):
     return mask
 
 
+def smooth_contour_spline(contour, num_points=120):
+    """
+    Fit a closed cubic B-spline through *contour* points and resample
+    into *num_points* evenly-spaced points for a smooth organic curve.
+
+    Parameters
+    ----------
+    contour : ndarray
+        OpenCV contour (N, 1, 2) or (N, 2) int/float array.
+    num_points : int
+        Number of output sample points on the smoothed curve.
+
+    Returns
+    -------
+    smooth_contour : ndarray
+        (num_points, 1, 2) int32 array in OpenCV contour format.
+    """
+    from scipy.interpolate import splprep, splev
+
+    pts = contour.reshape(-1, 2).astype(np.float64)
+    if len(pts) < 4:
+        # Not enough points to fit a cubic spline; return as-is
+        return contour
+
+    # Close the contour by repeating the first point
+    pts_closed = np.vstack([pts, pts[0]])
+    x = pts_closed[:, 0]
+    y = pts_closed[:, 1]
+
+    try:
+        # s (smoothing factor): 0 = interpolate exactly, > 0 = allow deviation.
+        # A small positive s absorbs pixel noise while staying faithful.
+        tck, _ = splprep([x, y], s=len(pts) * 0.5, per=True, k=3)
+        u_new = np.linspace(0, 1, num_points, endpoint=False)
+        x_new, y_new = splev(u_new, tck)
+        smooth = np.stack([x_new, y_new], axis=-1)
+        return smooth.astype(np.int32).reshape(-1, 1, 2)
+    except Exception:
+        # Fallback: if spline fitting fails, return the original
+        return contour
+
+
 def order_quad(points):
     """
     Return four points in clockwise image order starting from top-left.
@@ -216,17 +258,23 @@ def segment_board(img, workspace_outer_px, markers_dict=None, verbose=True):
     t_open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     timber_mask = cv2.morphologyEx(timber_mask, cv2.MORPH_OPEN, t_open_kernel)
 
-    # Find timber candidates
-    contours, _ = cv2.findContours(timber_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+    # Find timber candidates including inner cuts (holes) using RETR_CCOMP
+    contours, hierarchy = cv2.findContours(timber_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours or hierarchy is None:
         if verbose:
             print("  ERROR: No foreground contour found.")
         return [], timber_mask
 
     min_area = getattr(config, "MIN_BOARD_CONTOUR_AREA_PX", 3000)
+    min_hole_area = getattr(config, "MIN_TIMBER_HOLE_AREA_PX", 500)
     candidates = []
 
-    for contour in contours:
+    for i, contour in enumerate(contours):
+        # In RETR_CCOMP, hierarchy is [Next, Previous, First_Child, Parent]
+        # Only top-level outer contours have parent == -1
+        if hierarchy[0][i][3] != -1:
+            continue
+
         area = cv2.contourArea(contour)
         if area < min_area:
             continue
@@ -246,8 +294,26 @@ def segment_board(img, workspace_outer_px, markers_dict=None, verbose=True):
         if aspect_ratio < 1.0:
             continue
 
+        # Extract all child contours (inner cuts / holes) for this timber
+        holes = []
+        child_idx = hierarchy[0][i][2]
+        while child_idx != -1:
+            h_cnt = contours[child_idx]
+            h_area = cv2.contourArea(h_cnt)
+            if h_area >= min_hole_area:
+                holes.append(h_cnt)
+            child_idx = hierarchy[0][child_idx][0]  # Next sibling hole
+
+        # Create individual binary mask for this timber (timber wood = 255, holes & background = 0)
+        timber_individual_mask = np.zeros(timber_mask.shape, dtype=np.uint8)
+        cv2.drawContours(timber_individual_mask, [contour], -1, 255, thickness=cv2.FILLED)
+        if holes:
+            cv2.drawContours(timber_individual_mask, holes, -1, 0, thickness=cv2.FILLED)
+
+        net_area = area - sum(cv2.contourArea(h) for h in holes)
+
         score = area * min(aspect_ratio / 4.0, 2.0) * solidity
-        candidates.append((score, contour, area, aspect_ratio, solidity))
+        candidates.append((score, contour, area, aspect_ratio, solidity, holes, timber_individual_mask, net_area))
 
     if not candidates:
         if verbose:
@@ -257,15 +323,17 @@ def segment_board(img, workspace_outer_px, markers_dict=None, verbose=True):
     candidates.sort(key=lambda item: item[0], reverse=True)
     detected_timbers = []
 
-    for score, contour, area, aspect_ratio, solidity in candidates:
+    for score, contour, area, aspect_ratio, solidity, holes, timber_individual_mask, net_area in candidates:
 
         timber_corners_px = get_contour_oriented_box(contour)
 
         detected_timbers.append({
-            
             "contour": contour,
             "corners_px": timber_corners_px,
+            "holes": holes,
+            "mask": timber_individual_mask,
             "area": area,
+            "net_area": net_area,
             "aspect_ratio": aspect_ratio,
             "solidity": solidity,
             "score": score
@@ -372,10 +440,16 @@ def compute_live_homography(img_undist, verbose=True):
 # COLOR SAMPLING
 # ============================================================
 
-def sample_timber_color(img_bgr, contour):
-    """Calculate average LAB, RGB, and HEX color from inside the timber."""
-    mask = np.zeros(img_bgr.shape[:2], np.uint8)
-    cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+def sample_timber_color(img_bgr, contour, holes=None, timber_mask=None):
+    """Calculate average LAB, RGB, and HEX color from inside the timber (excluding inner cuts/holes)."""
+    if timber_mask is not None:
+        mask = timber_mask.copy()
+    else:
+        mask = np.zeros(img_bgr.shape[:2], np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
+        if holes:
+            cv2.drawContours(mask, holes, -1, 0, thickness=cv2.FILLED)
+
     if cv2.countNonZero(mask) > 400:
         eroded = cv2.erode(mask, np.ones((7, 7), np.uint8))
         if cv2.countNonZero(eroded) > 100:
@@ -777,6 +851,9 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
             "corners_px"
         ]
 
+        holes = timber.get("holes", [])
+        timber_mask_single = timber.get("mask", None)
+
 
         # ----------------------------------------------------
         # PIXEL -> MM : CORNERS
@@ -828,6 +905,44 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
             approx_cnt
         )
 
+        # Approximate and convert all inner cuts (holes)
+        inner_smooth_method = getattr(config, "INNER_CONTOUR_SMOOTH_METHOD", "approx").lower()
+        inner_approx_factor = float(getattr(config, "INNER_CONTOUR_APPROX_FACTOR", approx_factor))
+        inner_spline_pts = int(getattr(config, "INNER_CONTOUR_SPLINE_POINTS", 120))
+
+        approx_holes_px = []
+        holes_mm_table = []
+        holes_mm = []
+        hole_areas_mm2 = []
+
+        for h_cnt in holes:
+            if inner_smooth_method == "spline":
+                approx_h_px = smooth_contour_spline(h_cnt, num_points=inner_spline_pts)
+            else:
+                h_peri = cv2.arcLength(h_cnt, True)
+                h_eps = inner_approx_factor * h_peri
+                approx_h_px = cv2.approxPolyDP(h_cnt, h_eps, True)
+            approx_holes_px.append(approx_h_px)
+
+            h_cnt_pts = approx_h_px.reshape(-1, 2)
+            h_mm_table = pixel_to_mm(H, h_cnt_pts)
+            holes_mm_table.append(h_mm_table)
+
+            if use_parallax:
+                h_mm = np.array([
+                    [
+                        Xc + (pt[0] - Xc) * scale_factor,
+                        Yc + (pt[1] - Yc) * scale_factor
+                    ]
+                    for pt in h_mm_table
+                ], dtype=np.float32)
+            else:
+                h_mm = h_mm_table
+
+            holes_mm.append(h_mm)
+            h_area_mm2 = abs(cv2.contourArea(h_mm.astype(np.float32).reshape(-1, 1, 2)))
+            hole_areas_mm2.append(h_area_mm2)
+
 
         print(
             f"Raw contour points: "
@@ -838,6 +953,12 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
             f"Approximated points: "
             f"{len(approx_contour_px)}"
         )
+
+        if holes:
+            print(
+                f"Detected inner cuts (holes): {len(holes)} "
+                f"(smooth: {inner_smooth_method})"
+            )
 
 
         # ----------------------------------------------------
@@ -907,10 +1028,10 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
 
 
         # ----------------------------------------------------
-        # SURFACE AREA
+        # SURFACE AREA (Gross outer area minus all inner cuts/holes)
         # ----------------------------------------------------
 
-        surface_area_mm2 = abs(
+        gross_surface_area_mm2 = abs(
 
             cv2.contourArea(
 
@@ -925,6 +1046,9 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
                 )
             )
         )
+
+        total_hole_area_mm2 = float(sum(hole_areas_mm2))
+        surface_area_mm2 = max(0.0, gross_surface_area_mm2 - total_hole_area_mm2)
 
         surface_area_cm2 = (
             surface_area_mm2
@@ -987,7 +1111,9 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
 
         color_info = sample_timber_color(
             img_undist,
-            contour
+            contour,
+            holes=holes,
+            timber_mask=timber_mask_single
         )
 
 
@@ -1009,6 +1135,22 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
             "width_mm":
                 round(
                     width_mm,
+                    2
+                ),
+
+            "gross_surface_area_mm2":
+                round(
+                    float(
+                        gross_surface_area_mm2
+                    ),
+                    2
+                ),
+
+            "total_hole_area_mm2":
+                round(
+                    float(
+                        total_hole_area_mm2
+                    ),
                     2
                 ),
 
@@ -1073,6 +1215,55 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
                 in contour_mm
             ],
 
+            "holes_mm": [
+
+                [
+                    [
+                        round(
+                            float(x),
+                            2
+                        ),
+
+                        round(
+                            float(y),
+                            2
+                        )
+                    ]
+
+                    for x, y
+                    in h_mm
+                ]
+
+                for h_mm
+                in holes_mm
+            ],
+
+            "inner_contours_mm": [
+
+                [
+                    [
+                        round(
+                            float(x),
+                            2
+                        ),
+
+                        round(
+                            float(y),
+                            2
+                        )
+                    ]
+
+                    for x, y
+                    in h_mm
+                ]
+
+                for h_mm
+                in holes_mm
+            ],
+
+            "hole_count":
+                len(holes_mm),
+
             "timber_thickness_mm":
                 round(
                     timber_thickness_mm,
@@ -1116,7 +1307,7 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
         # DRAW THIS TIMBER ON DEBUG OVERLAY
         # ====================================================
 
-        # Yellow contour
+        # Yellow outer contour
         cv2.drawContours(
             overlay,
             [approx_contour_px],
@@ -1124,6 +1315,30 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
             (0, 255, 255),
             3
         )
+
+        # Yellow/Orange contour for inner cuts (holes)
+        if approx_holes_px:
+            cv2.drawContours(
+                overlay,
+                approx_holes_px,
+                -1,
+                (0, 215, 255),
+                2
+            )
+            for h_idx, (h_px, h_a_mm2) in enumerate(zip(approx_holes_px, hole_areas_mm2)):
+                h_mom = cv2.moments(h_px)
+                if h_mom["m00"] > 0:
+                    hcx = int(h_mom["m10"] / h_mom["m00"])
+                    hcy = int(h_mom["m01"] / h_mom["m00"])
+                    cv2.putText(
+                        overlay,
+                        f"Inner Cut #{h_idx + 1} ({h_a_mm2 / 100.0:.1f} cm2)",
+                        (hcx - 70, hcy),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 215, 255),
+                        2
+                    )
 
 
         # Green bounding box
@@ -1222,7 +1437,20 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
         )
 
         print(
-            f"Surface Area:  "
+            f"Gross Area:    "
+            f"{gross_surface_area_mm2:.1f} mm² "
+            f"({gross_surface_area_mm2 / 100.0:.2f} cm²)"
+        )
+
+        if holes_mm:
+            print(
+                f"Inner Cuts:    "
+                f"{len(holes_mm)} hole(s), total cutout: {total_hole_area_mm2:.1f} mm² "
+                f"({total_hole_area_mm2 / 100.0:.2f} cm²)"
+            )
+
+        print(
+            f"Net Area:      "
             f"{surface_area_mm2:.1f} mm² "
             f"({surface_area_cm2:.2f} cm²)"
         )
@@ -1609,7 +1837,7 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
 
 
                 # ---------------------------------------------
-                # DRAW YELLOW CONTOUR
+                # DRAW YELLOW CONTOUR (OUTER) & INNER CUTS
                 # ---------------------------------------------
 
                 cv2.drawContours(
@@ -1619,6 +1847,28 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
                     (0, 255, 255),
                     2
                 )
+
+                # Draw inner cuts (holes) in live display
+                holes = timber.get("holes", [])
+                if holes:
+                    inner_smooth_method = getattr(config, "INNER_CONTOUR_SMOOTH_METHOD", "approx").lower()
+                    inner_approx_f = float(getattr(config, "INNER_CONTOUR_APPROX_FACTOR", approx_factor))
+                    inner_spline_n = int(getattr(config, "INNER_CONTOUR_SPLINE_POINTS", 120))
+                    approx_holes = []
+                    for h in holes:
+                        if inner_smooth_method == "spline":
+                            approx_holes.append(smooth_contour_spline(h, num_points=inner_spline_n))
+                        else:
+                            approx_holes.append(
+                                cv2.approxPolyDP(h, inner_approx_f * cv2.arcLength(h, True), True)
+                            )
+                    cv2.drawContours(
+                        display,
+                        approx_holes,
+                        -1,
+                        (0, 215, 255),
+                        2
+                    )
 
 
                 # ---------------------------------------------
@@ -1944,7 +2194,7 @@ def main():
     parser.add_argument("--handdraw-model", default=str(DEFAULT_MODEL),
                         help="Trained ellipse/rectangle/triangle best.pt")
     parser.add_argument("--yolo-device", default="cpu", help="cpu (default), or GPU index such as 0")
-    parser.add_argument("--yolo-confidence", type=float, default=0.05)
+    parser.add_argument("--yolo-confidence", type=float, default=0.30)
     parser.add_argument("--yolo-image-size", type=int, default=640)
     parser.add_argument("--yolo-iou", type=float, default=0.45)
     parser.add_argument("--no-handdraw", action="store_true", help="Only measure timbers")

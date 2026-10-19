@@ -13,3 +13,6 @@ duvc-ctl>=0.1.2
 
 # Native Rhino 3DM CAD geometry serialization (for Rhino/Grasshopper export)
 rhino3dm>=7.14.0
+
+# B-spline interpolation for smooth inner contour curves
+scipy>=1.7.0

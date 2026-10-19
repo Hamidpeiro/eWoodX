@@ -93,6 +93,20 @@ def add_timber_to_model(model, data, index=0, z_offset=0.0):
     # Add curve to model
     model.Objects.AddCurve(curve, attr)
 
+    # 1b. Timber Inner Cuts / Holes (if present)
+    holes = data.get("holes_mm", data.get("inner_contours_mm", []))
+    for h_idx, hole_pts_coords in enumerate(holes):
+        if len(hole_pts_coords) >= 3:
+            h_pts = [rhino3dm.Point3d(float(x), float(y), float(z_offset)) for x, y in hole_pts_coords]
+            h_pts.append(h_pts[0])  # Close the loop
+            h_polyline = rhino3dm.Polyline(h_pts)
+            h_curve = h_polyline.ToPolylineCurve()
+            h_attr = rhino3dm.ObjectAttributes()
+            h_attr.LayerIndex = layer_index
+            h_attr.ColorSource = rhino3dm.ObjectColorSource.ColorFromLayer
+            h_attr.Name = f"Timber_{timber_id}_InnerCut_{h_idx + 1}"
+            model.Objects.AddCurve(h_curve, h_attr)
+
     # 5. Centroid for Annotation Placement
     cx = sum(p.X for p in pts[:-1]) / len(pts[:-1])
     cy = sum(p.Y for p in pts[:-1]) / len(pts[:-1])
@@ -110,9 +124,12 @@ def add_timber_to_model(model, data, index=0, z_offset=0.0):
         area_cm2 = (length_mm * width_mm) / 100.0
 
     # Text Dot Annotation
+    hole_count = len(holes)
+    hole_text = f"Inner Cuts: {hole_count}\n" if hole_count > 0 else ""
     label_text = (
         f"Timber {timber_id:02d}\n"
         f"Dim: {length_mm:.1f} x {width_mm:.1f} mm\n"
+        f"{hole_text}"
         f"Area: {area_cm2:.1f} cm²\n"
         f"Thick: {thickness_mm:.1f} mm\n"
         f"RGB({r}, {g}, {b})"

@@ -345,17 +345,25 @@ class HanddrawDetector:
             if cw <= 0 or ch <= 0:
                 continue
 
-            # Create contour mask inside crop coordinates
-            cnt_crop = contour - np.array([x0, y0])
-            crop_mask = np.zeros((ch, cw), dtype=np.uint8)
-            cv2.drawContours(crop_mask, [cnt_crop], -1, 255, cv2.FILLED)
+            # Create contour mask inside crop coordinates (respecting inner cuts / holes)
+            if "mask" in timber and timber["mask"] is not None:
+                crop_mask = timber["mask"][y0:y1, x0:x1].copy()
+                cnt_crop = contour - np.array([x0, y0])
+            else:
+                cnt_crop = contour - np.array([x0, y0])
+                crop_mask = np.zeros((ch, cw), dtype=np.uint8)
+                cv2.drawContours(crop_mask, [cnt_crop], -1, 255, cv2.FILLED)
+                for hole in timber.get("holes", []):
+                    h_cnt = np.asarray(hole, dtype=np.int32).reshape(-1, 1, 2)
+                    h_crop = h_cnt - np.array([x0, y0])
+                    cv2.drawContours(crop_mask, [h_crop], -1, 0, cv2.FILLED)
 
             # Gentle mask erosion to avoid erasing hand-drawn shapes near edges
             k_size = 3
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_size, k_size))
             eroded_mask = cv2.erode(crop_mask, kernel)
 
-            # Isolate timber: replace background outside timber contour with neutral gray (180, 180, 180)
+            # Isolate timber: replace background outside timber contour and inside inner cuts with neutral gray (180, 180, 180)
             masked_crop = frame[y0:y1, x0:x1].copy()
             masked_crop[eroded_mask == 0] = [180, 180, 180]
 
@@ -378,6 +386,17 @@ class HanddrawDetector:
 
                 # Reject detections touching timber crop boundaries (false edge artifacts)
                 if self._is_edge_detection(bx0, by0, bx1, by1, cw, ch):
+                    continue
+
+                # Reject detections whose center falls inside an inner cut (hole) or outside timber
+                cx_c = int(np.clip((bx0 + bx1) / 2.0, 0, cw - 1))
+                cy_c = int(np.clip((by0 + by1) / 2.0, 0, ch - 1))
+                if crop_mask[cy_c, cx_c] == 0:
+                    continue
+
+                # Reject detections where majority of bounding box is in empty cutout / background
+                sub_mask = crop_mask[int(by0):int(by1), int(bx0):int(bx1)]
+                if sub_mask.size > 0 and (np.count_nonzero(sub_mask) / sub_mask.size) < 0.60:
                     continue
 
                 boxes_list.append([bx0, by0, bx1 - bx0, by1 - by0])

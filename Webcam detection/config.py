@@ -25,7 +25,7 @@ CAMERA_INDEX = 1
 # Capture resolution (e.g., 3840x2160 4K, 1920x1080 FHD)
 IMAGE_WIDTH = 3840
 IMAGE_HEIGHT = 2160
-CAMERA_FPS = 1
+CAMERA_FPS = 30
 CAMERA_FOURCC = "MJPG"
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ CHECKERBOARD_SQUARE_SIZE_MM = 20.0  # measure your printed squares with calipers
 # Workspace / homography (ArUco markers at the 4 known table corners)
 # ---------------------------------------------------------------------------
 ARUCO_DICT = "DICT_4X4_50"
-ARUCO_MARKER_SIZE_MM = 100.0  # physical printed size of each marker's black square
+ARUCO_MARKER_SIZE_MM = 150.0  # physical printed size of each marker's black square
 
 # Marker ID -> real-world (X, Y) position in millimetres on your table plane.
 # Standard CAD / Rhino / Grasshopper coordinate system:
@@ -136,6 +136,8 @@ BACKGROUND_HSV_LOWER = (0, 0, 0)
 BACKGROUND_HSV_UPPER = (180, 15, 255)  # tune this: covers dark, low-saturation mat
 
 MIN_BOARD_CONTOUR_AREA_PX = 5000  # ignore small noise blobs after thresholding
+MIN_TIMBER_HOLE_AREA_PX = 500     # minimum area (px) for inner cuts / holes to avoid wood grain noise
+
 
 # ---------------------------------------------------------------------------
 # Contour Approximation (Smoothing & Simplification)
@@ -143,6 +145,21 @@ MIN_BOARD_CONTOUR_AREA_PX = 5000  # ignore small noise blobs after thresholding
 # Epsilon = CONTOUR_APPROX_FACTOR * arcLength (OpenCV cv2.approxPolyDP)
 # 0.001 smoothly simplifies contour and removes pixel noise while keeping organic curves.
 CONTOUR_APPROX_FACTOR = 0.004
+
+# Inner contour (holes / inner cuts) smoothing:
+#   INNER_CONTOUR_SMOOTH_METHOD:
+#     "approx"  – use cv2.approxPolyDP (polygonal simplification, same as outer contour)
+#     "spline"  – fit a closed cubic B-spline for smooth organic curves
+#   INNER_CONTOUR_APPROX_FACTOR:
+#     Same semantics as CONTOUR_APPROX_FACTOR but applied only to inner cuts.
+#     Lower values = more points / closer to original shape.
+#     Only used when INNER_CONTOUR_SMOOTH_METHOD = "approx".
+#   INNER_CONTOUR_SPLINE_POINTS:
+#     Number of interpolated points along each inner contour spline.
+#     More points = smoother curve.  Only used when method = "spline".
+INNER_CONTOUR_SMOOTH_METHOD = "spline"
+INNER_CONTOUR_APPROX_FACTOR = 0.002
+INNER_CONTOUR_SPLINE_POINTS = 120
 
 # ---------------------------------------------------------------------------
 # Projector 3D Mounting & Height (Thickness / Parallax Compensation)

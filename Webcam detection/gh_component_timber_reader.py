@@ -236,6 +236,9 @@ def parse_single_timber(data, file_path):
     contour_crv = None
     corners_pts = []
     defect_pts = []
+    holes_crvs = []
+
+    raw_holes = data.get("holes_mm", data.get("inner_contours_mm", []))
 
     if IN_RHINO and rg is not None:
         raw_contour = data.get("contour_mm", data.get("corners_mm", []))
@@ -243,6 +246,12 @@ def parse_single_timber(data, file_path):
             pts = [rg.Point3d(float(p[0]), float(p[1]), 0.0) for p in raw_contour]
             pts.append(pts[0])  # close polyline
             contour_crv = rg.Polyline(pts).ToPolylineCurve()
+
+        for h_pts_coords in raw_holes:
+            if h_pts_coords and len(h_pts_coords) >= 3:
+                h_pts = [rg.Point3d(float(p[0]), float(p[1]), 0.0) for p in h_pts_coords]
+                h_pts.append(h_pts[0])
+                holes_crvs.append(rg.Polyline(h_pts).ToPolylineCurve())
 
         for c_pt in data.get("corners_mm", []):
             if len(c_pt) >= 2:
@@ -259,6 +268,7 @@ def parse_single_timber(data, file_path):
         raw_contour = data.get("contour_mm", data.get("corners_mm", []))
         if raw_contour and len(raw_contour) >= 3:
             contour_crv = raw_contour
+        holes_crvs = raw_holes
         corners_pts = data.get("corners_mm", [])
         defect_pts = data.get("defects", [])
 
@@ -272,6 +282,8 @@ def parse_single_timber(data, file_path):
         "color_rgb": c_rgb,
         "color_hex": c_hex,
         "contour": contour_crv,
+        "holes": holes_crvs,
+        "hole_count": len(holes_crvs),
         "corners": corners_pts,
         "defects": defect_pts,
         "drawing_curves": drawing_crvs,
@@ -306,6 +318,7 @@ json_files = collect_json_files(raw_input)
 
 # 2. Parse all JSON files
 list_contours = []
+list_holes = []
 list_corners = []
 list_ids = []
 list_lengths = []
@@ -347,6 +360,7 @@ for f_path in json_files:
                 res = parse_single_timber(t_data, f_path)
                 if res["contour"] is not None:
                     list_contours.append(res["contour"])
+                list_holes.append(res.get("holes", []))
                 list_corners.append(res["corners"])
                 list_ids.append(res["timber_id"])
                 list_lengths.append(res["length_mm"])
@@ -401,6 +415,7 @@ if sel_idx is not None and len(list_contours) > 0:
             i = len(list_contours) - 1
         if 0 <= i < len(list_contours):
             list_contours = [list_contours[i]]
+            list_holes = [list_holes[i]]
             list_corners = [list_corners[i]]
             list_ids = [list_ids[i]]
             list_lengths = [list_lengths[i]]
@@ -423,6 +438,7 @@ if sel_idx is not None and len(list_contours) > 0:
 
 # 5. Populate Grafted DataTrees for Grasshopper outputs (Branches {0}, {1}, {2}...)
 timber_contour = timber_contours = make_grafted_tree(list_contours)
+timber_holes = inner_cuts = holes = make_grafted_tree(list_holes)
 timber_corners = corners = make_grafted_tree(list_corners)
 timber_id = timber_ids = make_grafted_tree(list_ids)
 length_mm = lengths_mm = make_grafted_tree(list_lengths)
