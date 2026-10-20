@@ -219,3 +219,60 @@ PROJECTOR_OFFSET_Y_MM = 0.0
 
 # Timber thickness in mm (default starting thickness for measurements and projection)
 TIMBER_THICKNESS_MM = 0.0
+
+# ---------------------------------------------------------------------------
+# Thickness Reference Plates (Color-coded circular plates)
+# ---------------------------------------------------------------------------
+# Physical diameter of each reference plate in mm (used for validation)
+THICKNESS_PLATE_DIAMETER_MM = 100.0
+
+# Color-to-thickness mapping for automatic thickness detection.
+# Each entry: color_name -> { "thickness_mm": float, "hsv_lower": (H, S, V), "hsv_upper": (H, S, V) }
+# HSV ranges tuned for typical lighting conditions on the workspace.
+THICKNESS_PLATES = {
+    "red": {
+        "thickness_mm": 10.0,
+        # Red wraps around H=0/180; high saturation (>120) avoids wood tones; V down to 35 handles dim/matte plates
+        "hsv_ranges": [
+            {"lower": (0, 120, 35), "upper": (15, 255, 255)},
+            {"lower": (165, 120, 35), "upper": (180, 255, 255)},
+        ],
+        "display_color_bgr": (0, 0, 255),
+    },
+    "blue": {
+        "thickness_mm": 20.0,
+        "hsv_ranges": [
+            {"lower": (95, 100, 35), "upper": (135, 255, 255)},
+        ],
+        "display_color_bgr": (255, 100, 0),
+    },
+    "green": {
+        "thickness_mm": 30.0,
+        "hsv_ranges": [
+            {"lower": (35, 70, 35), "upper": (85, 255, 255)},
+        ],
+        "display_color_bgr": (0, 200, 0),
+    },
+    "yellow": {
+        "thickness_mm": 40.0,
+        "hsv_ranges": [
+            {"lower": (20, 100, 50), "upper": (35, 255, 255)},
+        ],
+        "display_color_bgr": (0, 255, 255),
+    },
+    "orange": {
+        "thickness_mm": 50.0,
+        "hsv_ranges": [
+            {"lower": (10, 130, 50), "upper": (22, 255, 255)},
+        ],
+        "display_color_bgr": (0, 140, 255),
+    },
+}
+
+# Minimum circularity (0.0-1.0) to accept a contour as a circular plate.
+# 1.0 = perfect circle. Values >= 0.65 work well for slightly imperfect plates.
+THICKNESS_PLATE_MIN_CIRCULARITY = 0.65
+
+# Tolerance for plate diameter validation (fraction of expected diameter).
+# E.g., 0.35 means detected diameter must be within ±35% of THICKNESS_PLATE_DIAMETER_MM.
+THICKNESS_PLATE_DIAMETER_TOLERANCE = 0.35

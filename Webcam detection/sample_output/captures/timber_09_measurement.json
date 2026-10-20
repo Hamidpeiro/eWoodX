@@ -1,0 +1,251 @@
+{
+  "capture_id": 9,
+  "source_image": "c:\\Users\\hamid\\Documents\\GitHub\\eWoodX\\Webcam detection\\sample_output\\captures\\timber_09.jpg",
+  "reference_frame": {
+    "origin_marker_id": 1,
+    "origin_mm": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "x_axis": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "y_axis": [
+      0.0,
+      1.0,
+      0.0
+    ],
+    "z_axis": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "description": "Origin (0,0,0) at Marker 1 outer corner (Bottom-Left); +X towards Marker 0; +Y towards Marker 2"
+  },
+  "markers_world_mm": {
+    "1": {
+      "outer_corner_mm": [
+        0.0,
+        0.0
+      ],
+      "center_mm": [
+        74.92,
+        73.05
+      ],
+      "corners_mm": [
+        [
+          148.5,
+          -2.65
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.83,
+          149.06
+        ],
+        [
+          149.48,
+          147.29
+        ]
+      ]
+    },
+    "0": {
+      "outer_corner_mm": [
+        1780.0,
+        0.0
+      ],
+      "center_mm": [
+        1704.39,
+        75.06
+      ],
+      "corners_mm": [
+        [
+          1780.0,
+          0.0
+        ],
+        [
+          1629.31,
+          1.15
+        ],
+        [
+          1628.86,
+          150.4
+        ],
+        [
+          1779.52,
+          150.17
+        ]
+      ]
+    },
+    "2": {
+      "outer_corner_mm": [
+        0.0,
+        1040.0
+      ],
+      "center_mm": [
+        74.05,
+        964.59
+      ],
+      "corners_mm": [
+        [
+          147.85,
+          890.25
+        ],
+        [
+          0.95,
+          891.45
+        ],
+        [
+          0.0,
+          1040.0
+        ],
+        [
+          147.51,
+          1038.06
+        ]
+      ]
+    },
+    "3": {
+      "outer_corner_mm": [
+        1780.0,
+        1040.0
+      ],
+      "center_mm": [
+        1704.31,
+        962.33
+      ],
+      "corners_mm": [
+        [
+          1778.83,
+          887.25
+        ],
+        [
+          1629.83,
+          885.9
+        ],
+        [
+          1628.72,
+          1037.61
+        ],
+        [
+          1780.0,
+          1040.0
+        ]
+      ]
+    }
+  },
+  "timber_count": 1,
+  "timbers": [
+    {
+      "timber_id": 1,
+      "length_mm": 1268.31,
+      "width_mm": 557.56,
+      "gross_surface_area_mm2": 584054.48,
+      "total_hole_area_mm2": 0.0,
+      "surface_area_mm2": 584054.48,
+      "surface_area_cm2": 5840.54,
+      "side_lengths_mm": [
+        1291.05,
+        560.22,
+        1245.58,
+        554.91
+      ],
+      "corners_mm": [
+        [
+          227.33,
+          786.27
+        ],
+        [
+          1517.8,
+          824.7
+        ],
+        [
+          1515.09,
+          264.49
+        ],
+        [
+          269.91,
+          233.0
+        ]
+      ],
+      "contour_mm": [
+        [
+          265.08,
+          785.03
+        ],
+        [
+          271.33,
+          233.18
+        ],
+        [
+          294.25,
+          322.7
+        ],
+        [
+          1457.76,
+          308.89
+        ],
+        [
+          1458.38,
+          279.75
+        ],
+        [
+          1514.56,
+          276.27
+        ],
+        [
+          1514.02,
+          778.78
+        ]
+      ],
+      "holes_mm": [],
+      "inner_contours_mm": [],
+      "hole_count": 0,
+      "timber_thickness_mm": 10.0,
+      "thickness_source": "plate (red)",
+      "color_rgb": {
+        "R": 172,
+        "G": 146,
+        "B": 134
+      },
+      "color_hex": "#ac9286",
+      "color_lab": {
+        "L": 159.5,
+        "a": 135.8,
+        "b": 137.66
+      },
+      "defects": [],
+      "hand_drawn_shapes": [],
+      "hand_drawn_shape_count": 0
+    }
+  ],
+  "handdraw_detection": {
+    "model": "C:\\Users\\hamid\\Documents\\GitHub\\eWoodX\\Webcam detection\\train\\weights\\best.pt",
+    "device": "cpu",
+    "confidence_threshold": 0.5200000000000001,
+    "image_size": 640,
+    "iou_threshold": 0.45,
+    "classes": {
+      "0": "ellipse",
+      "1": "rectangle",
+      "2": "triangle"
+    }
+  },
+  "hand_drawn_shape_count": 0,
+  "thickness_plate": {
+    "detected": true,
+    "color_name": "red",
+    "thickness_mm": 10.0,
+    "diameter_mm": 122.3,
+    "circularity": 0.804,
+    "center_px": [
+      2323,
+      617
+    ]
+  }
+}

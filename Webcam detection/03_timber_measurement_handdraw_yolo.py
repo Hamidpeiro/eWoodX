@@ -9,6 +9,7 @@ Pipeline:
     -> detect 4 ArUco markers
     -> calculate live pixel -> mm homography from outer marker corners
     -> define workspace ROI from outer marker corners (masking out markers)
+    -> detect thickness reference plate (color-coded circle -> auto thickness)
     -> detect and remove the black background / curtain
     -> extract timber as foreground on top of the black curtain
     -> clean timber mask (fill internal grain, remove noise)
@@ -25,7 +26,17 @@ config.py is not modified by this script.
 
 Controls:
     SPACE = capture and measure
+    T     = set manual timber thickness
+    [ / ] = decrease / increase YOLO confidence
     ENTER / ESC = exit
+
+Thickness Detection:
+    Place a colored circular plate (100mm diameter) anywhere visible
+    in the workspace. The system auto-detects the plate color and
+    sets thickness accordingly:
+        Red    = 10mm    Blue   = 20mm    Green  = 30mm
+        Yellow = 40mm    Orange = 50mm
+    Remove the plate to revert to manual thickness (T key).
 """
 
 import cv2
@@ -178,7 +189,7 @@ def refine_corners_subpixel(img_gray, corners):
 # BLACK BACKGROUND / TIMBER SEGMENTATION
 # ============================================================
 
-def segment_board(img, workspace_outer_px, markers_dict=None, verbose=True):
+def segment_board(img, workspace_outer_px, markers_dict=None, verbose=True, plate_info=None):
     """
     Segment timber placed on a black background / curtain inside the ArUco workspace.
 
@@ -294,6 +305,21 @@ def segment_board(img, workspace_outer_px, markers_dict=None, verbose=True):
         if aspect_ratio < 1.0:
             continue
 
+        # Ignore candidate if it matches the detected thickness plate sitting on the background
+        if plate_info is not None:
+            cx, cy = plate_info["center_px"]
+            pr = plate_info["radius_px"]
+            M = cv2.moments(contour)
+            if M["m00"] > 0:
+                cnt_cx = M["m10"] / M["m00"]
+                cnt_cy = M["m01"] / M["m00"]
+                dist = np.hypot(cnt_cx - cx, cnt_cy - cy)
+                plate_area = np.pi * (pr ** 2)
+                if dist < pr * 0.85 and (0.25 * plate_area < area < 2.5 * plate_area) and aspect_ratio < 1.5:
+                    if verbose:
+                        print(f"  Ignoring candidate contour at ({cnt_cx:.0f}, {cnt_cy:.0f}): matches thickness plate ({plate_info['color_name']})")
+                    continue
+
         # Extract all child contours (inner cuts / holes) for this timber
         holes = []
         child_idx = hierarchy[0][i][2]
@@ -301,7 +327,19 @@ def segment_board(img, workspace_outer_px, markers_dict=None, verbose=True):
             h_cnt = contours[child_idx]
             h_area = cv2.contourArea(h_cnt)
             if h_area >= min_hole_area:
-                holes.append(h_cnt)
+                # If hole overlaps with the thickness plate on top of timber, ignore it
+                is_plate_hole = False
+                if plate_info is not None:
+                    cx, cy = plate_info["center_px"]
+                    pr = plate_info["radius_px"]
+                    h_M = cv2.moments(h_cnt)
+                    if h_M["m00"] > 0:
+                        h_cx = h_M["m10"] / h_M["m00"]
+                        h_cy = h_M["m01"] / h_M["m00"]
+                        if np.hypot(h_cx - cx, h_cy - cy) < pr:
+                            is_plate_hole = True
+                if not is_plate_hole:
+                    holes.append(h_cnt)
             child_idx = hierarchy[0][child_idx][0]  # Next sibling hole
 
         # Create individual binary mask for this timber (timber wood = 255, holes & background = 0)
@@ -440,8 +478,8 @@ def compute_live_homography(img_undist, verbose=True):
 # COLOR SAMPLING
 # ============================================================
 
-def sample_timber_color(img_bgr, contour, holes=None, timber_mask=None):
-    """Calculate average LAB, RGB, and HEX color from inside the timber (excluding inner cuts/holes)."""
+def sample_timber_color(img_bgr, contour, holes=None, timber_mask=None, plate_info=None):
+    """Calculate average LAB, RGB, and HEX color from inside the timber (excluding inner cuts/holes and plate)."""
     if timber_mask is not None:
         mask = timber_mask.copy()
     else:
@@ -449,6 +487,12 @@ def sample_timber_color(img_bgr, contour, holes=None, timber_mask=None):
         cv2.drawContours(mask, [contour], -1, 255, thickness=cv2.FILLED)
         if holes:
             cv2.drawContours(mask, holes, -1, 0, thickness=cv2.FILLED)
+
+    # Exclude plate region from color sampling if plate is on the timber
+    if plate_info is not None:
+        cx, cy = plate_info["center_px"]
+        r = int(round(plate_info["radius_px"] * 1.15))
+        cv2.circle(mask, (cx, cy), r, 0, thickness=cv2.FILLED)
 
     if cv2.countNonZero(mask) > 400:
         eroded = cv2.erode(mask, np.ones((7, 7), np.uint8))
@@ -475,6 +519,215 @@ def sample_timber_color(img_bgr, contour, holes=None, timber_mask=None):
         },
         "hex": f"#{r:02x}{g:02x}{b:02x}"
     }
+
+
+# ============================================================
+# THICKNESS REFERENCE PLATE DETECTION
+# ============================================================
+
+def detect_thickness_plate(img, H=None, workspace_mask=None, verbose=False):
+    """
+    Detect a colored circular reference plate in the image and return
+    the corresponding thickness.
+
+    The plate is a physical circle of known diameter (config.THICKNESS_PLATE_DIAMETER_MM)
+    painted in a specific color.  Each color maps to a known timber thickness.
+
+    Detection pipeline:
+        1. Convert image to HSV.
+        2. For each configured plate color, apply HSV threshold(s) to isolate
+           candidate pixels.
+        3. Apply workspace mask (only look inside the ArUco workspace).
+        4. Find contours; filter by area and circularity.
+        5. If a homography is available, validate that the detected circle's
+           diameter in mm matches the expected plate diameter (within tolerance).
+        6. Return the best (largest, most circular) detection.
+
+    Parameters
+    ----------
+    img : ndarray
+        Undistorted BGR image.
+    H : ndarray or None
+        3x3 pixel-to-mm homography.  When available, the function validates
+        the physical size of detected circles.
+    workspace_mask : ndarray or None
+        Binary mask (255 inside workspace).  If None, the whole image is used.
+    verbose : bool
+        Print debug information.
+
+    Returns
+    -------
+    dict or None
+        {
+            "color_name": str,          # e.g. "red"
+            "thickness_mm": float,      # e.g. 10.0
+            "center_px": (int, int),    # pixel center
+            "radius_px": int,           # pixel radius
+            "diameter_mm": float,       # measured real-world diameter
+            "display_color_bgr": tuple, # BGR color for drawing
+            "circularity": float,       # 0..1
+        }
+        or None if no valid plate is found.
+    """
+    plates_cfg = getattr(config, "THICKNESS_PLATES", {})
+    if not plates_cfg:
+        return None
+
+    expected_diameter_mm = float(getattr(config, "THICKNESS_PLATE_DIAMETER_MM", 100.0))
+    min_circularity = float(getattr(config, "THICKNESS_PLATE_MIN_CIRCULARITY", 0.65))
+    diameter_tolerance = float(getattr(config, "THICKNESS_PLATE_DIAMETER_TOLERANCE", 0.35))
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    best = None
+    best_score = -1.0
+
+    for color_name, plate_info in plates_cfg.items():
+        thickness_mm = float(plate_info["thickness_mm"])
+        hsv_ranges = plate_info.get("hsv_ranges", [])
+        display_color = plate_info.get("display_color_bgr", (255, 255, 255))
+
+        # Build combined mask for all HSV ranges of this color
+        combined_mask = np.zeros(img.shape[:2], dtype=np.uint8)
+        for hrange in hsv_ranges:
+            lower = np.array(hrange["lower"], dtype=np.uint8)
+            upper = np.array(hrange["upper"], dtype=np.uint8)
+            mask = cv2.inRange(hsv, lower, upper)
+            combined_mask = cv2.bitwise_or(combined_mask, mask)
+
+        # Restrict to workspace area
+        if workspace_mask is not None:
+            combined_mask = cv2.bitwise_and(combined_mask, workspace_mask)
+
+        # Morphological cleaning to remove noise and fill gaps
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+
+        # Find contours
+        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            # Minimum area filter: at least 500 px² to avoid noise
+            if area < 500:
+                continue
+
+            perimeter = cv2.arcLength(cnt, True)
+            if perimeter <= 0:
+                continue
+
+            # Circularity: 4π·area / perimeter²  (1.0 = perfect circle)
+            circularity = (4.0 * np.pi * area) / (perimeter * perimeter)
+            if circularity < min_circularity:
+                continue
+
+            # Get enclosing circle
+            (cx, cy), radius_px = cv2.minEnclosingCircle(cnt)
+            cx, cy, radius_px = int(round(cx)), int(round(cy)), int(round(radius_px))
+
+            if radius_px < 5:
+                continue
+
+            # If homography is available, validate physical diameter
+            diameter_mm = 0.0
+            if H is not None:
+                # Measure diameter by projecting two points across the circle
+                pt_left = np.array([[cx - radius_px, cy]], dtype=np.float32).reshape(-1, 1, 2)
+                pt_right = np.array([[cx + radius_px, cy]], dtype=np.float32).reshape(-1, 1, 2)
+                mm_left = cv2.perspectiveTransform(pt_left, H).reshape(-1, 2)[0]
+                mm_right = cv2.perspectiveTransform(pt_right, H).reshape(-1, 2)[0]
+                diameter_mm = float(np.linalg.norm(mm_right - mm_left))
+
+                # Validate diameter is within tolerance
+                lower_limit = expected_diameter_mm * (1.0 - diameter_tolerance)
+                upper_limit = expected_diameter_mm * (1.0 + diameter_tolerance)
+                if not (lower_limit <= diameter_mm <= upper_limit):
+                    if verbose:
+                        print(f"  Plate rejected ({color_name}): diameter {diameter_mm:.1f}mm "
+                              f"outside [{lower_limit:.1f}, {upper_limit:.1f}]mm")
+                    continue
+
+            score = area * circularity
+            if score > best_score:
+                best_score = score
+                # Create dedicated binary mask for the plate
+                plate_mask = np.zeros(img.shape[:2], dtype=np.uint8)
+                cv2.drawContours(plate_mask, [cnt], -1, 255, thickness=cv2.FILLED)
+
+                best = {
+                    "color_name": color_name,
+                    "thickness_mm": thickness_mm,
+                    "center_px": (cx, cy),
+                    "radius_px": radius_px,
+                    "diameter_mm": round(diameter_mm, 1),
+                    "display_color_bgr": display_color,
+                    "circularity": round(circularity, 3),
+                    "mask": plate_mask,
+                }
+
+    if best is not None and verbose:
+        print(f"  Plate detected: {best['color_name']} → {best['thickness_mm']:.0f}mm "
+              f"(⌀{best['diameter_mm']:.1f}mm, circularity {best['circularity']:.2f})")
+
+    return best
+
+
+def draw_plate_overlay(display, plate_info, active=True):
+    """
+    Draw a visual indicator on the display for a detected thickness plate.
+
+    Parameters
+    ----------
+    display : ndarray
+        Image to draw on (modified in-place).
+    plate_info : dict
+        Detection result from detect_thickness_plate().
+    active : bool
+        If True, draws with a solid indicator (plate thickness is in use).
+    """
+    if plate_info is None:
+        return
+
+    cx, cy = plate_info["center_px"]
+    radius = plate_info["radius_px"]
+    color = plate_info["display_color_bgr"]
+    thickness_mm = plate_info["thickness_mm"]
+    color_name = plate_info["color_name"]
+    diameter_mm = plate_info["diameter_mm"]
+
+    # Draw circle outline around the detected plate
+    thickness_line = 4 if active else 2
+    cv2.circle(display, (cx, cy), radius, color, thickness_line, cv2.LINE_AA)
+
+    # Draw crosshair at center
+    cross_size = max(8, radius // 4)
+    cv2.line(display, (cx - cross_size, cy), (cx + cross_size, cy), color, 2, cv2.LINE_AA)
+    cv2.line(display, (cx, cy - cross_size), (cx, cy + cross_size), color, 2, cv2.LINE_AA)
+
+    # Label badge: color name + thickness
+    label = f"{color_name.upper()} PLATE: {thickness_mm:.0f}mm"
+    if diameter_mm > 0:
+        label += f" (d={diameter_mm:.0f}mm)"
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.7
+    font_thick = 2
+    (tw, th), baseline = cv2.getTextSize(label, font, font_scale, font_thick)
+
+    label_x = cx - tw // 2
+    label_y = cy - radius - 15
+
+    # Ensure label stays on screen
+    label_x = max(5, min(label_x, display.shape[1] - tw - 5))
+    label_y = max(th + 5, label_y)
+
+    # Background rectangle for label
+    cv2.rectangle(display, (label_x - 4, label_y - th - 4),
+                  (label_x + tw + 4, label_y + 4), color, -1, cv2.LINE_AA)
+    cv2.putText(display, label, (label_x, label_y), font, font_scale,
+                (0, 0, 0), font_thick, cv2.LINE_AA)
 
 
 # ============================================================
@@ -544,13 +797,34 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
 
 
     # --------------------------------------------------------
+    # 3b. DETECT THICKNESS REFERENCE PLATE
+    # --------------------------------------------------------
+
+    ws_mask_for_plate = polygon_mask(img_undist.shape, workspace_outer_px)
+    plate_detection = detect_thickness_plate(
+        img_undist, H=H, workspace_mask=ws_mask_for_plate, verbose=True
+    )
+
+    thickness_source = "manual"
+    if plate_detection is not None:
+        timber_thickness_mm = plate_detection["thickness_mm"]
+        thickness_source = f"plate ({plate_detection['color_name']})"
+        print(f"\n  Thickness plate detected: {plate_detection['color_name']} "
+              f"→ {timber_thickness_mm:.0f} mm "
+              f"(⌀{plate_detection['diameter_mm']:.1f}mm)")
+    else:
+        print(f"\n  No thickness plate detected. Using manual: {timber_thickness_mm:.1f} mm")
+
+
+    # --------------------------------------------------------
     # 4. DETECT ALL TIMBERS
     # --------------------------------------------------------
 
     detected_timbers, mask = segment_board(
         img_undist,
         workspace_outer_px,
-        detected_all
+        detected_all,
+        plate_info=plate_detection
     )
 
 
@@ -570,10 +844,28 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
         f"{base_name}_mask.png"
     )
 
+    # Save combined segmentation mask (timbers + plate if detected)
+    saved_mask = mask.copy()
+    if plate_detection is not None:
+        cx, cy = plate_detection["center_px"]
+        r = plate_detection["radius_px"]
+        cv2.circle(saved_mask, (cx, cy), r, 255, thickness=cv2.FILLED)
+
     cv2.imwrite(
         mask_path,
-        mask
+        saved_mask
     )
+
+    plate_mask_path = None
+    if plate_detection is not None and "mask" in plate_detection:
+        plate_mask_path = os.path.join(
+            config.CAPTURE_DIR,
+            f"{base_name}_plate_mask.png"
+        )
+        cv2.imwrite(
+            plate_mask_path,
+            plate_detection["mask"]
+        )
 
 
     # --------------------------------------------------------
@@ -1113,7 +1405,8 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
             img_undist,
             contour,
             holes=holes,
-            timber_mask=timber_mask_single
+            timber_mask=timber_mask_single,
+            plate_info=plate_detection
         )
 
 
@@ -1269,6 +1562,9 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
                     timber_thickness_mm,
                     1
                 ),
+
+            "thickness_source":
+                thickness_source,
 
             "color_rgb":
                 color_info[
@@ -1504,7 +1800,22 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
     result["handdraw_detection"] = (HANDDRAW_DETECTOR.metadata()
                                     if HANDDRAW_DETECTOR is not None else {"enabled": False})
     result["hand_drawn_shape_count"] = sum(len(group) for group in drawing_groups)
+
+    # Add thickness plate detection info to JSON
+    if plate_detection is not None:
+        result["thickness_plate"] = {
+            "detected": True,
+            "color_name": plate_detection["color_name"],
+            "thickness_mm": plate_detection["thickness_mm"],
+            "diameter_mm": plate_detection["diameter_mm"],
+            "circularity": plate_detection["circularity"],
+            "center_px": list(plate_detection["center_px"]),
+        }
+    else:
+        result["thickness_plate"] = {"detected": False}
+
     draw_detections(overlay, [item for group in drawing_groups for item in group])
+    draw_plate_overlay(overlay, plate_detection)
 
     out_path = os.path.join(
 
@@ -1594,6 +1905,11 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
         f"Mask:    {mask_path}"
     )
 
+    if plate_mask_path:
+        print(
+            f"Plate:   {plate_mask_path}"
+        )
+
     print(
         f"Overlay: {overlay_path}"
     )
@@ -1615,6 +1931,16 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
     - Yellow contour for every detected timber
     - Green bounding box for every detected timber
     - Timber ID and live dimensions
+    - Detected thickness reference plate (circle + label)
+
+    Returns
+    -------
+    display : ndarray
+        Rendered viewport image.
+    effective_thickness : float
+        The thickness to use: plate-detected if visible, otherwise manual.
+    plate_info : dict or None
+        Plate detection result, or None.
     """
 
     display = img_undist.copy()
@@ -1637,6 +1963,8 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
     detected_timbers = []
     timber_detected = False
     timber_count = 0
+    plate_info = None
+    effective_thickness = current_thickness
 
     status_text = "Place timber(s) inside black workspace"
 
@@ -1671,6 +1999,19 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
             (0, 0, 255),
             2
         )
+
+
+        # ----------------------------------------------------
+        # DETECT THICKNESS REFERENCE PLATE (LIVE)
+        # ----------------------------------------------------
+
+        ws_mask_live = polygon_mask(img_undist.shape, workspace_outer_px)
+        plate_info = detect_thickness_plate(
+            img_undist, H=H, workspace_mask=ws_mask_live, verbose=False
+        )
+        if plate_info is not None:
+            effective_thickness = plate_info["thickness_mm"]
+            draw_plate_overlay(display, plate_info, active=True)
 
 
         # ----------------------------------------------------
@@ -1715,7 +2056,8 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
             img_undist,
             workspace_outer_px,
             detected_all,
-            verbose=False
+            verbose=False,
+            plate_info=plate_info
         )
 
 
@@ -1749,7 +2091,7 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
             )
 
             h_timber = float(
-                current_thickness
+                effective_thickness
             )
 
             use_parallax = (
@@ -2095,6 +2437,11 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
     conf_info = f"  |  YOLO: {HANDDRAW_DETECTOR.confidence:.2f} ([/])" if HANDDRAW_DETECTOR is not None else ""
 
     # First line
+    if plate_info is not None:
+        thickness_label = f"T: {effective_thickness:.0f}mm ({plate_info['color_name'].upper()} PLATE)"
+    else:
+        thickness_label = f"T: {current_thickness:.1f}mm (manual)"
+
     if timber_detected:
         top_text = (
             f"CAPTURE {timber_number:02d}"
@@ -2103,7 +2450,7 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
             f"{drawing_info}"
             f"{conf_info}"
             f"  |  "
-            f"T: {current_thickness:.1f}mm"
+            f"{thickness_label}"
         )
     else:
         top_text = (
@@ -2112,6 +2459,8 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
             f"{status_text}"
             f"{drawing_info}"
             f"{conf_info}"
+            f"  |  "
+            f"{thickness_label}"
         )
 
 
@@ -2164,7 +2513,7 @@ def render_live_viewport(img_undist, timber_number, current_thickness):
     )
 
 
-    return display
+    return display, effective_thickness, plate_info
 # ============================================================
 # FIND NEXT TIMBER NUMBER
 # ============================================================
@@ -2263,9 +2612,17 @@ def main():
     print("SPACE       = capture and measure")
     print("[ / ]       = decrease / increase YOLO confidence threshold")
     print("T           = change timber thickness (for parallax correction)")
+    print("              (color plates auto-detect thickness when visible)")
     print("ENTER / ESC = exit")
     print(f"\nCurrent timber thickness: {current_thickness:.1f} mm")
     print(f"Camera height: {getattr(config, 'CAMERA_HEIGHT_MM', 0.0):.0f} mm")
+    
+    # Print configured thickness plates
+    plates_cfg = getattr(config, "THICKNESS_PLATES", {})
+    if plates_cfg:
+        print(f"\nThickness plates configured ({len(plates_cfg)} colors):")
+        for c_name, c_info in plates_cfg.items():
+            print(f"  {c_name.capitalize():8s} → {c_info['thickness_mm']:.0f} mm")
     
     print(f"Output folder: {config.CAPTURE_DIR}")
 
@@ -2277,6 +2634,8 @@ def main():
 
     zoom_factor = float(getattr(config, "CAMERA_ZOOM", getattr(config, "CAMERA_ZOOM_VALUE", 1.0)))
 
+    live_thickness = current_thickness  # Effective thickness (plate or manual)
+
     try:
         while True:
             ret, raw_frame = cap.read()
@@ -2286,7 +2645,9 @@ def main():
 
             frame = camera_utils.apply_digital_zoom(raw_frame, zoom_factor)
             img_undist = undistort(frame)
-            display = render_live_viewport(img_undist, timber_number, current_thickness)
+            display, live_thickness, live_plate = render_live_viewport(
+                img_undist, timber_number, current_thickness
+            )
 
             cv2.imshow(window_name, display)
             target_fps = float(getattr(config, "CAMERA_FPS", 1))
@@ -2305,22 +2666,29 @@ def main():
                     HANDDRAW_DETECTOR.set_confidence(new_conf)
                     print(f"YOLO Confidence: {new_conf:.2f}")
 
-            elif key == ord('t') or key == ord('T'):  # T = change thickness
-                print(f"\nCurrent timber thickness: {current_thickness:.1f} mm")
+            elif key == ord('t') or key == ord('T'):  # T = change manual thickness
+                print(f"\nCurrent manual thickness: {current_thickness:.1f} mm")
+                if live_plate is not None:
+                    print(f"  (NOTE: Plate detected → auto thickness: {live_plate['thickness_mm']:.0f} mm. "
+                          f"Remove plate to use manual thickness.)")
                 try:
-                    new_val = input("Enter new timber thickness in mm (e.g. 20, 35, 50): ").strip()
+                    new_val = input("Enter new manual timber thickness in mm (e.g. 20, 35, 50): ").strip()
                     current_thickness = float(new_val)
-                    print(f"Timber thickness set to: {current_thickness:.1f} mm")
+                    print(f"Manual timber thickness set to: {current_thickness:.1f} mm")
                 except (ValueError, EOFError):
                     print("Invalid input. Thickness unchanged.")
 
             elif key == 32:  # SPACE
-                print(f"\nCapturing timber {timber_number:02d} (thickness: {current_thickness:.1f} mm)...")
+                # Use live_thickness: plate-detected if plate is visible, otherwise manual
+                capture_thickness = live_thickness
+                source_label = "plate" if live_plate is not None else "manual"
+                print(f"\nCapturing timber {timber_number:02d} "
+                      f"(thickness: {capture_thickness:.1f} mm [{source_label}])...")
                 image_path = os.path.join(config.CAPTURE_DIR, f"timber_{timber_number:02d}.jpg")
                 cv2.imwrite(image_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 100])
                 print(f"Captured: {image_path}")
 
-                success = measure_timber(frame, image_path, timber_number, current_thickness)
+                success = measure_timber(frame, image_path, timber_number, capture_thickness)
                 if success:
                     print("\n" + "=" * 60)
                     print(f"TIMBER {timber_number:02d} COMPLETE")
