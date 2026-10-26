@@ -44,6 +44,9 @@ import numpy as np
 import json
 import os
 import sys
+import socket
+import threading
+import queue
 import argparse
 import config
 import camera_utils
@@ -55,8 +58,117 @@ HANDDRAW_DETECTOR = None
 
 
 # ============================================================
+# GRASSHOPPER REMOTE CAPTURE SERVER (TCP PORT 9998)
+# ============================================================
+
+class GrasshopperCaptureServer:
+    """
+    Lightweight background TCP listener allowing Grasshopper to remotely trigger
+    timber capture & measurement on demand while the live camera loop is active.
+    Reserved timber ID 0 is dedicated for Grasshopper updates.
+    """
+    def __init__(self, host="127.0.0.1", port=9998):
+        self.host = host
+        self.port = port
+        self.running = False
+        self.server_sock = None
+        self.thread = None
+        self.request_queue = queue.Queue()
+
+    def start(self):
+        try:
+            self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server_sock.bind((self.host, self.port))
+            self.server_sock.listen(2)
+            self.server_sock.settimeout(0.5)
+            self.running = True
+            self.thread = threading.Thread(target=self._listen_loop, daemon=True)
+            self.thread.start()
+            reserved_num = getattr(config, "GRASSHOPPER_RESERVED_TIMBER_NUMBER", 0)
+            print(f"[Grasshopper] Remote capture listener active on {self.host}:{self.port}")
+            print(f"[Grasshopper] Reserved timber #{reserved_num:02d} specifically for Grasshopper.")
+        except Exception as e:
+            print(f"[Grasshopper] Warning: Could not start remote capture listener on port {self.port}: {e}")
+
+    def _listen_loop(self):
+        while self.running:
+            try:
+                client, addr = self.server_sock.accept()
+            except socket.timeout:
+                continue
+            except Exception:
+                break
+
+            try:
+                client.settimeout(15.0)
+                data = client.recv(1024)
+                if not data:
+                    client.close()
+                    continue
+                text = data.decode("utf-8", errors="ignore").strip()
+                print(f"\n[Grasshopper] Incoming remote capture request from {addr[0]}: '{text}'")
+                requested_number = getattr(config, "GRASSHOPPER_RESERVED_TIMBER_NUMBER", 0)
+                try:
+                    payload = json.loads(text)
+                    requested_number = int(payload.get("number", requested_number))
+                except Exception:
+                    parts = text.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        requested_number = int(parts[1])
+
+                event = threading.Event()
+                req = {
+                    "number": requested_number,
+                    "event": event,
+                    "client": client,
+                    "result": None
+                }
+                self.request_queue.put(req)
+
+                # Wait for main camera loop to capture and measure the frame
+                if event.wait(timeout=15.0):
+                    res = req.get("result", {})
+                    response_bytes = (json.dumps(res) + "\n").encode("utf-8")
+                    try:
+                        client.sendall(response_bytes)
+                        print(f"[Grasshopper] Sent response back to {addr[0]}: status={res.get('status')}")
+                    except Exception as se:
+                        print(f"[Grasshopper] Error sending response: {se}")
+                else:
+                    err_res = {"status": "error", "message": "Capture timeout in camera loop"}
+                    try:
+                        client.sendall((json.dumps(err_res) + "\n").encode("utf-8"))
+                    except Exception:
+                        pass
+
+            except Exception:
+                pass
+            finally:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+    def get_pending_request(self):
+        try:
+            return self.request_queue.get_nowait()
+        except queue.Empty:
+            return None
+
+    def stop(self):
+        self.running = False
+        if self.server_sock:
+            try:
+                self.server_sock.close()
+            except Exception:
+                pass
+
+
+# ============================================================
 # CAMERA UNDISTORTION
 # ============================================================
+
 
 def undistort(img):
     """Remove lens distortion using the saved intrinsic calibration (supports fisheye and standard)."""
@@ -96,6 +208,7 @@ def smooth_contour_spline(contour, num_points=120):
     from scipy.interpolate import splprep, splev
 
     pts = contour.reshape(-1, 2).astype(np.float64)
+    
     if len(pts) < 4:
         # Not enough points to fit a cubic spline; return as-is
         return contour
@@ -1417,7 +1530,7 @@ def measure_timber(img, image_path, timber_number, timber_thickness_mm=0.0):
         timber_result = {
 
             "timber_id":
-                i + 1,
+                0 if timber_number == 0 else (i + 1),
 
             "length_mm":
                 round(
@@ -2636,6 +2749,13 @@ def main():
 
     live_thickness = current_thickness  # Effective thickness (plate or manual)
 
+    # Start Grasshopper remote capture listener (TCP Port 9998)
+    gh_server = GrasshopperCaptureServer(
+        host=getattr(config, "GRASSHOPPER_TRIGGER_HOST", "127.0.0.1"),
+        port=int(getattr(config, "GRASSHOPPER_TRIGGER_PORT", 9998))
+    )
+    gh_server.start()
+
     try:
         while True:
             ret, raw_frame = cap.read()
@@ -2653,6 +2773,65 @@ def main():
             target_fps = float(getattr(config, "CAMERA_FPS", 1))
             frame_delay = max(1, int(1000.0 / max(1.0, target_fps)))
             key = cv2.waitKey(frame_delay) & 0xFF
+
+            # --------------------------------------------------------
+            # CHECK FOR REMOTE CAPTURE TRIGGER (GRASSHOPPER BUTTON)
+            # --------------------------------------------------------
+            gh_req = gh_server.get_pending_request()
+            file_trigger = False
+            trigger_file_path = getattr(config, "CAPTURE_TRIGGER_FILE", os.path.join(config.CAPTURE_DIR, "capture_trigger.json"))
+            if gh_req is None and os.path.exists(trigger_file_path):
+                try:
+                    with open(trigger_file_path, "r", encoding="utf-8") as tf:
+                        tf_data = json.load(tf)
+                    os.remove(trigger_file_path)
+                    file_trigger = True
+                    gh_req = {
+                        "number": int(tf_data.get("number", getattr(config, "GRASSHOPPER_RESERVED_TIMBER_NUMBER", 0))),
+                        "event": None,
+                        "client": None,
+                        "result": None
+                    }
+                except Exception:
+                    pass
+
+            if gh_req is not None:
+                gh_num = int(gh_req.get("number", getattr(config, "GRASSHOPPER_RESERVED_TIMBER_NUMBER", 0)))
+                capture_thickness = live_thickness
+                source_label = "plate" if live_plate is not None else "manual"
+                print("\n" + "=" * 60)
+                print(f"[GRASSHOPPER REMOTE CAPTURE] Capturing timber {gh_num:02d} "
+                      f"(thickness: {capture_thickness:.1f} mm [{source_label}])...")
+                print("=" * 60)
+                image_path = os.path.join(config.CAPTURE_DIR, f"timber_{gh_num:02d}.jpg")
+                cv2.imwrite(image_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 100])
+                print(f"Captured: {image_path}")
+
+                success = measure_timber(frame, image_path, gh_num, capture_thickness)
+                json_path = os.path.join(config.CAPTURE_DIR, f"timber_{gh_num:02d}_measurement.json")
+                res_payload = {
+                    "status": "success" if success else "error",
+                    "timber_number": gh_num,
+                    "json_path": json_path,
+                    "image_path": image_path
+                }
+                gh_req["result"] = res_payload
+                if gh_req.get("event") is not None:
+                    gh_req["event"].set()
+
+                if file_trigger:
+                    try:
+                        status_path = os.path.join(config.CAPTURE_DIR, "capture_status.json")
+                        with open(status_path, "w", encoding="utf-8") as sf:
+                            json.dump(res_payload, sf)
+                    except Exception:
+                        pass
+
+                if success:
+                    print(f"\n[GRASSHOPPER] Timber {gh_num:02d} captured and saved -> {json_path}")
+                else:
+                    print(f"\n[GRASSHOPPER] Timber {gh_num:02d} measurement failed.")
+                # Manual timber_number is NOT incremented; timber 00 is reserved for Grasshopper.
 
             if key in (ord('['), ord('-')):  # Lower confidence
                 if HANDDRAW_DETECTOR is not None:
@@ -2704,6 +2883,7 @@ def main():
                 break
 
     finally:
+        gh_server.stop()
         cap.release()
         cv2.destroyAllWindows()
         if controller is not None:
@@ -2712,6 +2892,7 @@ def main():
             except Exception:
                 pass
         print("\nMeasurement session finished.")
+
 
 
 # ============================================================

@@ -260,19 +260,15 @@ THICKNESS_PLATES = {
         ],
         "display_color_bgr": (0, 255, 255),
     },
-    "orange": {
-        "thickness_mm": 50.0,
-        "hsv_ranges": [
-            {"lower": (10, 130, 50), "upper": (22, 255, 255)},
-        ],
-        "display_color_bgr": (0, 140, 255),
-    },
+
 }
 
-# Minimum circularity (0.0-1.0) to accept a contour as a circular plate.
-# 1.0 = perfect circle. Values >= 0.65 work well for slightly imperfect plates.
-THICKNESS_PLATE_MIN_CIRCULARITY = 0.65
 
-# Tolerance for plate diameter validation (fraction of expected diameter).
-# E.g., 0.35 means detected diameter must be within ±35% of THICKNESS_PLATE_DIAMETER_MM.
-THICKNESS_PLATE_DIAMETER_TOLERANCE = 0.35
+# ---------------------------------------------------------------------------
+# Grasshopper Remote Capture Server & Reserved Timber ID
+# ---------------------------------------------------------------------------
+GRASSHOPPER_TRIGGER_HOST = "127.0.0.1"
+GRASSHOPPER_TRIGGER_PORT = 9998
+GRASSHOPPER_RESERVED_TIMBER_NUMBER = 0
+CAPTURE_TRIGGER_FILE = os.path.join(CAPTURE_DIR, "capture_trigger.json")
+

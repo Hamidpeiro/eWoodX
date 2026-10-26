@@ -1,46 +1,55 @@
 """
 ================================================================================
-eWoodX - Grasshopper GhPython Component 1: Multi-Timber JSON Reader (Grafted DataTree)
+eWoodX - Grasshopper GhPython Component: Single-Timber Reader & Live Capture
 ================================================================================
+
+Description:
+  Reads timber geometry, dimensions, and hand-drawn YOLO annotations from JSON.
+  Features a live Button input to remotely trigger capture and measurement
+  in 03_timber_measurement_handdraw_yolo.py.
+
+  Timber Number 0 is strictly reserved for Grasshopper captures:
+    - Capturing from Grasshopper updates 'timber_00_measurement.json' & 'timber_00.jpg'.
+    - Does NOT alter the manual camera counter (timbers 1, 2, 3... remain intact).
+    - Designed specifically to work with this single JSON.
 
 How to use in Grasshopper:
 1. Place a "GhPython Script" component on the Grasshopper canvas.
 2. Configure Component Inputs:
-     - json_paths : (Item or List Access, Type Hint: str, Optional)
-                    [Can be:
-                      * Folder path (e.g. captures folder) -> loads ALL JSONs inside
-                      * List of JSON file paths
-                      * Single JSON file path
-                      * Left empty / disconnected -> automatically loads ALL captures]
+     - capture    : (Item/List Access, Type Hint: bool) [Button: press to capture live frame]
+                    (Also supports names: refresh, btn_capture, button, trigger)
+     - json_path  : (Item Access, Type Hint: str, Optional)
+                    [Folder or single JSON. Leave empty to automatically use reserved timber_00_measurement.json]
      - index      : (Item Access, Type Hint: int, Optional)
-                    [Select specific timber index (0, 1, 2... or -1 for latest),
-                     or leave disconnected to output ALL timbers grafted]
-     - refresh    : (Item Access, Type Hint: bool, Optional) [Button / Timer]
+                    [Index of timber if file has multiple, default: 0]
+     - host       : (Item Access, Type Hint: str, Optional) [Default: 127.0.0.1]
+     - port       : (Item Access, Type Hint: int, Optional) [Default: 9998]
 
-3. Output Names (ALL Outputs are Grafted into Grasshopper DataTrees {0}, {1}, {2}... per Timber):
-     - timber_contour  / timber_contours   : DataTree of PolylineCurve outline on branch {i}
-     - timber_corners  / corners           : DataTree of 4 Point3d corner points on branch {i}
-     - timber_id       / timber_ids        : DataTree of integer ID on branch {i}
-     - length_mm       / lengths_mm        : DataTree of length (mm) on branch {i}
-     - width_mm        / widths_mm         : DataTree of width (mm) on branch {i}
-     - thickness_mm    / thicknesses_mm    : DataTree of thickness (mm) on branch {i}
-     - surface_area_cm2/ surface_areas_cm2 : DataTree of surface area (cm²) on branch {i}
-     - side_lengths_mm                     : DataTree of 4 side lengths (mm) on branch {i}
-     - color_rgb       / colors_rgb        : DataTree of System.Drawing.Color on branch {i}
-     - color_hex       / colors_hex        : DataTree of hex string on branch {i}
-     - defects                             : DataTree of defect Point3d on branch {i}
-     - drawing_curves  / hand_drawn_shapes : DataTree of detected shape PolylineCurves (ellipse/rect/tri)
-     - drawing_centers                     : DataTree of detected shape center Point3d (mm)
-     - drawing_classes                     : DataTree of class strings ('ellipse', 'rectangle', 'triangle')
-     - drawing_sizes                       : DataTree of shape sizes in mm (e.g. '120.5x80.2mm')
-     - drawing_confidences                 : DataTree of YOLO detection confidence scores (0.0 - 1.0)
-     - table_boundary                      : PolylineCurve of physical table
-     - markers_corners                     : DataTree of ArUco marker PolylineCurves
-     - file_path       / file_paths        : DataTree of file path on branch {i}
-     - raw_data                            : Raw dictionary data on branch {i}
-     - info                                : Formatted summary text
+3. Configure Component Outputs (Grafted DataTree {0} per timber for full compatibility):
+     - timber_contour  : PolylineCurve outline of the timber
+     - timber_corners  : 4 Point3d corner points
+     - timber_holes    : Inner cutout / hole curves
+     - timber_id       : Timber ID (0 for Grasshopper captures)
+     - length_mm       : Calibrated length (mm)
+     - width_mm        : Calibrated width (mm)
+     - thickness_mm    : Timber thickness (mm)
+     - surface_area_cm2: Surface area (cm²)
+     - side_lengths_mm : Length of 4 sides (mm)
+     - color_rgb       : System.Drawing.Color / RGB
+     - color_hex       : Hex color string (#rrggbb)
+     - defects         : List of defect Point3d
+     - drawing_curves  : Hand-drawn shape curves (ellipse, rect, triangle)
+     - drawing_centers : Center Point3d of hand-drawn shapes
+     - drawing_classes : Class names of shapes ('ellipse', 'rectangle', 'triangle')
+     - drawing_sizes   : Dimension string of shapes (e.g. '120.5x80.2mm')
+     - drawing_confidences: YOLO detection confidence scores (0.0 - 1.0)
+     - table_boundary  : PolylineCurve of physical table workspace
+     - markers_corners : ArUco marker boundary curves
+     - file_path       : Path to the loaded JSON file
+     - status          : Live capture status & connection diagnostics
+     - info            : Formatted summary text
 
-4. Paste the entire code below into the GhPython component editor.
+4. Paste this entire code into the GhPython component editor.
 ================================================================================
 """
 
@@ -48,6 +57,9 @@ import os
 import glob
 import json
 import re
+import socket
+import time
+import datetime
 
 # Rhino, Grasshopper & .NET imports with safe fallback for testing outside Rhino
 try:
@@ -67,10 +79,14 @@ except ImportError:
     HAS_DATATREE = False
 
 
+# ============================================================
+# DATATREE & VALUE EXTRACTION HELPERS
+# ============================================================
+
 def make_grafted_tree(items_per_timber):
     """
     Convert a list of items (where item i belongs to timber i)
-    into a Grasshopper DataTree with branch paths {0}, {1}, {2}...
+    into a Grasshopper DataTree with branch paths {0}, {1}...
     """
     if not HAS_DATATREE or DataTree is None:
         return items_per_timber
@@ -84,6 +100,98 @@ def make_grafted_tree(items_per_timber):
         elif val is not None:
             tree.Add(val, path)
     return tree
+
+
+def extract_bool(val):
+    """
+    Safely extract boolean state from any GH_Boolean, System.Boolean,
+    list, DataTree, or primitive. Essential for Grasshopper Button components.
+    """
+    if val is None:
+        return False
+    # GH_Boolean or wrapped Goo with .Value property
+    if hasattr(val, "Value"):
+        try:
+            return bool(val.Value)
+        except Exception:
+            pass
+    # DataTree with .AllData()
+    if hasattr(val, "AllData"):
+        try:
+            for item in val.AllData():
+                if extract_bool(item):
+                    return True
+        except Exception:
+            pass
+        return False
+    # Python list or tuple
+    if isinstance(val, (list, tuple)):
+        for item in val:
+            if extract_bool(item):
+                return True
+        return False
+    # .NET collection / IEnumerable (e.g. List[Boolean])
+    if hasattr(val, "__iter__") and not isinstance(val, (str, bytes)):
+        try:
+            for item in val:
+                if extract_bool(item):
+                    return True
+        except Exception:
+            pass
+        return False
+    # Standard Python bool
+    if isinstance(val, bool):
+        return val
+    # Numeric
+    if isinstance(val, (int, float)):
+        return bool(val)
+    # String representation
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "capture", "pressed")
+    try:
+        s = str(val).strip().lower()
+        if s in ("true", "1", "yes"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def extract_single_string(val):
+    """Safely extract a single string from any DataTree, list, or primitive."""
+    if val is None:
+        return None
+    if hasattr(val, "Value"):
+        try:
+            return str(val.Value).strip()
+        except Exception:
+            pass
+    if hasattr(val, "AllData"):
+        try:
+            for item in val.AllData():
+                s = extract_single_string(item)
+                if s:
+                    return s
+        except Exception:
+            pass
+        return None
+    if isinstance(val, (list, tuple)):
+        for item in val:
+            s = extract_single_string(item)
+            if s:
+                return s
+        return None
+    if hasattr(val, "__iter__") and not isinstance(val, (str, bytes)):
+        try:
+            for item in val:
+                s = extract_single_string(item)
+                if s:
+                    return s
+        except Exception:
+            pass
+        return None
+    s_val = str(val).strip().strip('"').strip("'")
+    return s_val if s_val else None
 
 
 def find_default_capture_dir():
@@ -100,7 +208,7 @@ def find_default_capture_dir():
     ]
     for s_dir in search_dirs:
         if s_dir and os.path.isdir(s_dir):
-            return s_dir
+            return os.path.normpath(s_dir)
     return None
 
 
@@ -109,65 +217,126 @@ def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
 
 
-def collect_json_files(input_paths):
-    """Resolve input paths (folder, list of files, single file, or empty) into list of JSON files."""
-    files_to_load = []
+# ============================================================
+# REMOTE CAPTURE TRIGGER
+# ============================================================
 
-    if input_paths is None or (isinstance(input_paths, (list, tuple)) and len(input_paths) == 0) or str(input_paths).strip() == "":
+def trigger_remote_capture(host="127.0.0.1", port=9998, number=0, timeout=15.0):
+    """
+    Remotely signal 03_timber_measurement_handdraw_yolo.py to capture and measure.
+    Uses TCP socket first (port 9998). If socket fails, uses capture_trigger.json fallback.
+    Returns (success: bool, status_msg: str, json_path: str)
+    """
+    # 1. Primary Method: TCP Socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        sock.connect((host, int(port)))
+        payload = json.dumps({"action": "capture", "number": int(number)}) + "\n"
+        sock.sendall(payload.encode("utf-8"))
+
+        raw_resp = sock.recv(4096)
+        sock.close()
+
+        if raw_resp:
+            resp_str = raw_resp.decode("utf-8", errors="ignore").strip()
+            data = json.loads(resp_str)
+            if data.get("status") == "success":
+                now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                j_path = data.get("json_path", "")
+                return True, f"Capture OK: Timber #{number:02d} captured and saved at {now_str}", j_path
+            else:
+                return False, f"Capture error from camera script: {data.get('message', 'Unknown error')}", ""
+    except Exception as e:
+        # Socket failed, fall through to file trigger
+        pass
+
+    # 2. Fallback Method: File-based trigger
+    cap_dir = find_default_capture_dir()
+    if cap_dir and os.path.isdir(cap_dir):
+        trig_file = os.path.join(cap_dir, "capture_trigger.json")
+        status_file = os.path.join(cap_dir, "capture_status.json")
+        target_json = os.path.join(cap_dir, f"timber_{number:02d}_measurement.json")
+        start_time = time.time()
+        prev_mtime = os.path.getmtime(target_json) if os.path.exists(target_json) else 0
+
+        try:
+            with open(trig_file, "w", encoding="utf-8") as tf:
+                json.dump({"action": "capture", "number": int(number), "time": start_time}, tf)
+
+            while (time.time() - start_time) < timeout:
+                time.sleep(0.15)
+                if os.path.exists(status_file):
+                    try:
+                        with open(status_file, "r", encoding="utf-8") as sf:
+                            sdata = json.load(sf)
+                        os.remove(status_file)
+                        if sdata.get("status") == "success":
+                            now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                            return True, f"Capture OK: Timber #{number:02d} updated via file trigger at {now_str}", target_json
+                    except Exception:
+                        pass
+
+                if os.path.exists(target_json) and os.path.getmtime(target_json) > prev_mtime:
+                    now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                    return True, f"Capture OK: Timber #{number:02d} updated at {now_str}", target_json
+
+            return False, "Capture timeout: Camera script did not respond in time.", ""
+        except Exception as e:
+            return False, f"File trigger error: {e}", ""
+
+    return False, "Camera script is NOT running! Please run '03_timber_measurement_handdraw_yolo.py' in a terminal.", ""
+
+
+def resolve_single_json_file(raw_input):
+    """
+    Resolve the single JSON file to load.
+    Prioritizes reserved timber #00 (timber_00_measurement.json).
+    If timber_00 does not exist yet, falls back to the most recent measurement JSON.
+    """
+    clean_path = extract_single_string(raw_input)
+    cap_dir = None
+
+    if clean_path:
+        clean_path = os.path.normpath(clean_path)
+        if os.path.isfile(clean_path):
+            return clean_path
+        elif os.path.isdir(clean_path):
+            cap_dir = clean_path
+
+    if not cap_dir:
         cap_dir = find_default_capture_dir()
-        if cap_dir:
-            # Look in captures directly or in subfolder captures
-            found = glob.glob(os.path.join(cap_dir, "timber_*_measurement.json"))
-            if not found and os.path.isdir(os.path.join(cap_dir, "captures")):
-                found = glob.glob(os.path.join(cap_dir, "captures", "timber_*_measurement.json"))
-            if not found:
-                found = glob.glob(os.path.join(cap_dir, "*.json"))
-            found.sort(key=natural_sort_key)
-            files_to_load = found
-    else:
-        raw_list = input_paths if isinstance(input_paths, (list, tuple)) else [input_paths]
-        for p in raw_list:
-            if not p:
-                continue
-            p_str = str(p).strip().strip('"').strip("'")
-            if os.path.isdir(p_str):
-                # 1. Look for timber_*_measurement.json
-                found = glob.glob(os.path.join(p_str, "timber_*_measurement.json"))
-                # 2. Look in subfolder 'captures'
-                if not found and os.path.isdir(os.path.join(p_str, "captures")):
-                    found = glob.glob(os.path.join(p_str, "captures", "timber_*_measurement.json"))
-                # 3. Look for any json in folder
-                if not found:
-                    found = glob.glob(os.path.join(p_str, "*.json"))
-                # 4. Recursive search
-                if not found:
-                    found = glob.glob(os.path.join(p_str, "**", "*.json"), recursive=True)
-                found.sort(key=natural_sort_key)
-                files_to_load.extend(found)
-            elif os.path.isfile(p_str):
-                files_to_load.append(p_str)
-            elif "*" in p_str or "?" in p_str:
-                found = glob.glob(p_str)
-                found.sort(key=natural_sort_key)
-                files_to_load.extend(found)
 
-    seen = set()
-    unique_files = []
-    for f in files_to_load:
-        norm = os.path.normpath(f)
-        if norm not in seen and os.path.exists(norm):
-            seen.add(norm)
-            unique_files.append(norm)
+    if cap_dir and os.path.isdir(cap_dir):
+        # 1. Target reserved timber_00_measurement.json
+        t00 = os.path.join(cap_dir, "timber_00_measurement.json")
+        if os.path.isfile(t00):
+            return t00
+        t00_sub = os.path.join(cap_dir, "captures", "timber_00_measurement.json")
+        if os.path.isfile(t00_sub):
+            return t00_sub
 
-    return unique_files
+        # 2. If timber_00 not created yet, preview the latest available capture
+        all_measurements = glob.glob(os.path.join(cap_dir, "timber_*_measurement.json"))
+        if not all_measurements and os.path.isdir(os.path.join(cap_dir, "captures")):
+            all_measurements = glob.glob(os.path.join(cap_dir, "captures", "timber_*_measurement.json"))
+        if not all_measurements:
+            all_measurements = glob.glob(os.path.join(cap_dir, "*.json"))
+
+        if all_measurements:
+            # Sort naturally so highest number (latest) is picked
+            all_measurements.sort(key=natural_sort_key)
+            return all_measurements[-1]
+
+    return None
 
 
 def parse_single_timber(data, file_path):
     """Extract geometry and properties from a single timber JSON dictionary."""
-    t_id = data.get("timber_id", 1)
+    t_id = data.get("timber_id", data.get("capture_id", 0))
     l_mm = float(data.get("length_mm", 0.0))
     w_mm = float(data.get("width_mm", 0.0))
-    th_mm = float(data.get("timber_thickness_mm", 0.0))
+    th_mm = float(data.get("timber_thickness_mm", data.get("thickness_mm", 0.0)))
     sides = [float(s) for s in data.get("side_lengths_mm", [])]
 
     if "surface_area_cm2" in data:
@@ -199,7 +368,7 @@ def parse_single_timber(data, file_path):
         c_mm = drw.get("center_mm", [0.0, 0.0])
         corners_mm = drw.get("bbox_corners_mm", [])
 
-        # Calculate bounding dimensions (mm)
+        # Dimensions
         w_d_mm = 0.0
         h_d_mm = 0.0
         if len(corners_mm) >= 4:
@@ -210,7 +379,6 @@ def parse_single_timber(data, file_path):
             dy2 = corners_mm[2][1] - corners_mm[1][1]
             h_d_mm = (dx2**2 + dy2**2)**0.5
 
-        # Shape geometry points (ellipse curve, rectangle, triangle)
         shape_pts_mm = drw.get("shape_points_mm") or drw.get("bbox_corners_mm", [])
 
         if IN_RHINO and rg is not None:
@@ -296,98 +464,93 @@ def parse_single_timber(data, file_path):
     }
 
 
-
 # ============================================================
 # MAIN COMPONENT EXECUTION
 # ============================================================
 
-# 1. Resolve inputs
-raw_input = globals().get("json_paths", None)
-if raw_input is None:
-    raw_input = globals().get("json_path", None)
-if raw_input is None:
-    raw_input = globals().get("folder", None)
-if raw_input is None:
-    raw_input = globals().get("path", None)
-if raw_input is None:
-    raw_input = globals().get("file", None)
-if raw_input is None:
-    raw_input = globals().get("json", None)
+# 1. Detect Button Press (Supports any input name: capture, refresh, btn_capture, button, trigger)
+btn_pressed = False
+btn_name_found = None
+for candidate in ["capture", "refresh", "btn_capture", "capture_button", "button", "trigger", "btn"]:
+    if candidate in globals() and globals()[candidate] is not None:
+        raw_val = globals()[candidate]
+        if extract_bool(raw_val):
+            btn_pressed = True
+            btn_name_found = candidate
+            break
 
-json_files = collect_json_files(raw_input)
+# Remote server host/port
+remote_host = str(extract_single_string(globals().get("host", "127.0.0.1")) or "127.0.0.1")
+try:
+    remote_port = int(globals().get("port", 9998))
+except Exception:
+    remote_port = 9998
 
-# 2. Parse all JSON files
-list_contours = []
-list_holes = []
-list_corners = []
-list_ids = []
-list_lengths = []
-list_widths = []
-list_thicknesses = []
-list_areas = []
-list_sides = []
-list_colors_rgb = []
-list_colors_hex = []
-list_defects = []
-list_drawing_curves = []
-list_drawing_centers = []
-list_drawing_classes = []
-list_drawing_sizes = []
-list_drawing_confidences = []
-list_files = []
-list_raw = []
-first_data = None
+status_messages = []
+captured_file_path = None
 
-for f_path in json_files:
+# 2. Trigger Capture if Button Pressed
+if btn_pressed:
+    print(f"[GhTimberReader] Button '{btn_name_found}' pressed! Requesting capture from camera ({remote_host}:{remote_port})...")
+    cap_ok, cap_msg, cap_json = trigger_remote_capture(host=remote_host, port=remote_port, number=0, timeout=15.0)
+    print(f"[GhTimberReader] {cap_msg}")
+    status_messages.append(cap_msg)
+    if cap_ok and cap_json and os.path.isfile(cap_json):
+        captured_file_path = cap_json
+
+# 3. Resolve Target Single JSON
+if captured_file_path:
+    single_json_path = captured_file_path
+else:
+    # Resolve from input or default
+    raw_path_input = None
+    for p_name in ["json_path", "json_paths", "folder", "path", "file", "json"]:
+        if p_name in globals() and globals()[p_name] is not None:
+            raw_path_input = globals()[p_name]
+            break
+    single_json_path = resolve_single_json_file(raw_path_input)
+
+# 4. Parse the Single JSON
+parsed_timber = None
+root_data = None
+
+if single_json_path and os.path.exists(single_json_path):
     try:
-        with open(f_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            data["_file_path"] = f_path
-            if first_data is None:
-                first_data = data
+        with open(single_json_path, "r", encoding="utf-8") as f:
+            root_data = json.load(f)
+            root_data["_file_path"] = single_json_path
 
-            # Check if this JSON contains multiple timbers under "timbers" list
-            if "timbers" in data and isinstance(data["timbers"], list) and len(data["timbers"]) > 0:
-                timbers_in_file = data["timbers"]
+            # If JSON contains a list of timbers, pick selected index or timber #0
+            if "timbers" in root_data and isinstance(root_data["timbers"], list) and len(root_data["timbers"]) > 0:
+                timber_list = root_data["timbers"]
+                sel_idx = globals().get("index", globals().get("selected_index", 0))
+                try:
+                    t_idx = int(sel_idx) if sel_idx is not None else 0
+                    if t_idx < 0 or t_idx >= len(timber_list):
+                        t_idx = 0
+                except Exception:
+                    t_idx = 0
+                t_data = timber_list[t_idx]
             else:
-                timbers_in_file = [data]
+                t_data = root_data
 
-            for t_data in timbers_in_file:
-                # Inherit marker info if needed
-                if "markers_world_mm" in data and "markers_world_mm" not in t_data:
-                    t_data["markers_world_mm"] = data["markers_world_mm"]
+            # Inherit markers / reference frame if needed
+            if "markers_world_mm" in root_data and "markers_world_mm" not in t_data:
+                t_data["markers_world_mm"] = root_data["markers_world_mm"]
 
-                res = parse_single_timber(t_data, f_path)
-                if res["contour"] is not None:
-                    list_contours.append(res["contour"])
-                list_holes.append(res.get("holes", []))
-                list_corners.append(res["corners"])
-                list_ids.append(res["timber_id"])
-                list_lengths.append(res["length_mm"])
-                list_widths.append(res["width_mm"])
-                list_thicknesses.append(res["thickness_mm"])
-                list_areas.append(res["surface_area_cm2"])
-                list_sides.append(res["side_lengths_mm"])
-                list_colors_rgb.append(res["color_rgb"])
-                list_colors_hex.append(res["color_hex"])
-                list_defects.append(res["defects"])
-                list_drawing_curves.append(res["drawing_curves"])
-                list_drawing_centers.append(res["drawing_centers"])
-                list_drawing_classes.append(res["drawing_classes"])
-                list_drawing_sizes.append(res["drawing_sizes"])
-                list_drawing_confidences.append(res["drawing_confidences"])
-                list_files.append(f_path)
-                list_raw.append(t_data)
-    except Exception as e:
-        pass
+            parsed_timber = parse_single_timber(t_data, single_json_path)
+    except Exception as exc:
+        err_msg = f"Error parsing JSON ({os.path.basename(single_json_path)}): {exc}"
+        print(f"[GhTimberReader] {err_msg}")
+        status_messages.append(err_msg)
 
-# 3. Table & Markers Geometry
+# 5. Table & Markers Geometry
 table_boundary = None
 markers_corners_list = []
 
 if IN_RHINO and rg is not None:
-    if first_data and "markers_world_mm" in first_data:
-        for m_id, m_info in first_data["markers_world_mm"].items():
+    if root_data and "markers_world_mm" in root_data:
+        for m_id, m_info in root_data["markers_world_mm"].items():
             if "corners_mm" in m_info and len(m_info["corners_mm"]) == 4:
                 m_pts = [rg.Point3d(float(p[0]), float(p[1]), 0.0) for p in m_info["corners_mm"]]
                 m_pts.append(m_pts[0])
@@ -403,69 +566,67 @@ if IN_RHINO and rg is not None:
     ]
     table_boundary = rg.Polyline(table_pts).ToPolylineCurve()
 
-# 4. Handle optional Index Filter
-sel_idx = globals().get("index", None)
-if sel_idx is None:
-    sel_idx = globals().get("selected_index", None)
+# 6. Populate Output Variables (Grafted Tree {0} for full Grasshopper compatibility)
+if parsed_timber is not None:
+    timber_contour = timber_contours = make_grafted_tree([parsed_timber["contour"]])
+    timber_holes = inner_cuts = holes = make_grafted_tree([parsed_timber["holes"]])
+    timber_corners = corners = make_grafted_tree([parsed_timber["corners"]])
+    timber_id = timber_ids = make_grafted_tree([parsed_timber["timber_id"]])
+    length_mm = lengths_mm = make_grafted_tree([parsed_timber["length_mm"]])
+    width_mm = widths_mm = make_grafted_tree([parsed_timber["width_mm"]])
+    thickness_mm = thicknesses_mm = make_grafted_tree([parsed_timber["thickness_mm"]])
+    surface_area_cm2 = surface_areas_cm2 = make_grafted_tree([parsed_timber["surface_area_cm2"]])
+    side_lengths_mm = make_grafted_tree([parsed_timber["side_lengths_mm"]])
+    color_rgb = colors_rgb = make_grafted_tree([parsed_timber["color_rgb"]])
+    color_hex = colors_hex = make_grafted_tree([parsed_timber["color_hex"]])
+    defects = make_grafted_tree([parsed_timber["defects"]])
+    drawing_curves = hand_drawn_shapes = make_grafted_tree([parsed_timber["drawing_curves"]])
+    drawing_centers = make_grafted_tree([parsed_timber["drawing_centers"]])
+    drawing_classes = make_grafted_tree([parsed_timber["drawing_classes"]])
+    drawing_sizes = make_grafted_tree([parsed_timber["drawing_sizes"]])
+    drawing_confidences = make_grafted_tree([parsed_timber["drawing_confidences"]])
+    file_path = file_paths = make_grafted_tree([single_json_path])
+    raw_data = make_grafted_tree([parsed_timber["raw"]])
+    markers_corners = make_grafted_tree(markers_corners_list)
 
-if sel_idx is not None and len(list_contours) > 0:
-    try:
-        i = int(sel_idx)
-        if i == -1:
-            i = len(list_contours) - 1
-        if 0 <= i < len(list_contours):
-            list_contours = [list_contours[i]]
-            list_holes = [list_holes[i]]
-            list_corners = [list_corners[i]]
-            list_ids = [list_ids[i]]
-            list_lengths = [list_lengths[i]]
-            list_widths = [list_widths[i]]
-            list_thicknesses = [list_thicknesses[i]]
-            list_areas = [list_areas[i]]
-            list_sides = [list_sides[i]]
-            list_colors_rgb = [list_colors_rgb[i]]
-            list_colors_hex = [list_colors_hex[i]]
-            list_defects = [list_defects[i]]
-            list_drawing_curves = [list_drawing_curves[i]]
-            list_drawing_centers = [list_drawing_centers[i]]
-            list_drawing_classes = [list_drawing_classes[i]]
-            list_drawing_sizes = [list_drawing_sizes[i]]
-            list_drawing_confidences = [list_drawing_confidences[i]]
-            list_files = [list_files[i]]
-            list_raw = [list_raw[i]]
-    except Exception:
-        pass
-
-# 5. Populate Grafted DataTrees for Grasshopper outputs (Branches {0}, {1}, {2}...)
-timber_contour = timber_contours = make_grafted_tree(list_contours)
-timber_holes = inner_cuts = holes = make_grafted_tree(list_holes)
-timber_corners = corners = make_grafted_tree(list_corners)
-timber_id = timber_ids = make_grafted_tree(list_ids)
-length_mm = lengths_mm = make_grafted_tree(list_lengths)
-width_mm = widths_mm = make_grafted_tree(list_widths)
-thickness_mm = thicknesses_mm = make_grafted_tree(list_thicknesses)
-surface_area_cm2 = surface_areas_cm2 = make_grafted_tree(list_areas)
-side_lengths_mm = make_grafted_tree(list_sides)
-color_rgb = colors_rgb = make_grafted_tree(list_colors_rgb)
-color_hex = colors_hex = make_grafted_tree(list_colors_hex)
-defects = make_grafted_tree(list_defects)
-drawing_curves = hand_drawn_shapes = make_grafted_tree(list_drawing_curves)
-drawing_centers = make_grafted_tree(list_drawing_centers)
-drawing_classes = make_grafted_tree(list_drawing_classes)
-drawing_sizes = make_grafted_tree(list_drawing_sizes)
-drawing_confidences = make_grafted_tree(list_drawing_confidences)
-file_path = file_paths = make_grafted_tree(list_files)
-raw_data = make_grafted_tree(list_raw)
-markers_corners = make_grafted_tree(markers_corners_list)
-
-# 6. Formatted Summary Info
-if len(json_files) == 0:
-    info = "No timber JSON files found in specified path or captures directory."
+    fname = os.path.basename(single_json_path)
+    drw_cls = parsed_timber["drawing_classes"]
+    drw_str = f" | Drawings: {', '.join(drw_cls)}" if drw_cls else ""
+    info = (
+        f"Timber #{parsed_timber['timber_id']}: {parsed_timber['length_mm']:.1f} x {parsed_timber['width_mm']:.1f} mm, "
+        f"T={parsed_timber['thickness_mm']:.1f}mm{drw_str}\n"
+        f"File: {fname}"
+    )
+    if not status_messages:
+        status_messages.append(f"READY: Loaded {fname} (Timber #{parsed_timber['timber_id']})")
+    
+    # Print status summary to Grasshopper 'out' parameter
+    print(f"[GhTimberReader] Active File: {fname} (Timber #{parsed_timber['timber_id']}) -> {parsed_timber['length_mm']:.1f} x {parsed_timber['width_mm']:.1f} mm{drw_str}")
 else:
-    info_lines = [f"Loaded {len(json_files)} timber JSON file(s) (Grafted into DataTrees):"]
-    for i, (t_id, l, w, th, fn, drw_cls) in enumerate(zip(list_ids, list_lengths, list_widths, list_thicknesses, list_files, list_drawing_classes)):
-        fname = os.path.basename(fn)
-        drw_str = f" | Drawings: {', '.join(drw_cls)}" if drw_cls else ""
-        info_lines.append(f" {{{i}}} Timber #{t_id}: {l:.1f} x {w:.1f} mm, T={th:.1f}mm{drw_str} ({fname})")
-    info = "\n".join(info_lines)
+    timber_contour = timber_contours = make_grafted_tree([])
+    timber_holes = inner_cuts = holes = make_grafted_tree([])
+    timber_corners = corners = make_grafted_tree([])
+    timber_id = timber_ids = make_grafted_tree([])
+    length_mm = lengths_mm = make_grafted_tree([])
+    width_mm = widths_mm = make_grafted_tree([])
+    thickness_mm = thicknesses_mm = make_grafted_tree([])
+    surface_area_cm2 = surface_areas_cm2 = make_grafted_tree([])
+    side_lengths_mm = make_grafted_tree([])
+    color_rgb = colors_rgb = make_grafted_tree([])
+    color_hex = colors_hex = make_grafted_tree([])
+    defects = make_grafted_tree([])
+    drawing_curves = hand_drawn_shapes = make_grafted_tree([])
+    drawing_centers = make_grafted_tree([])
+    drawing_classes = make_grafted_tree([])
+    drawing_sizes = make_grafted_tree([])
+    drawing_confidences = make_grafted_tree([])
+    file_path = file_paths = make_grafted_tree([])
+    raw_data = make_grafted_tree([])
+    markers_corners = make_grafted_tree(markers_corners_list)
 
+    info = "No JSON found. Connect a Button to 'refresh' / 'capture' and press to capture Timber #00 from live camera."
+    if not status_messages:
+        status_messages.append("WAITING: Press Button to capture Timber #00 from 03_timber_measurement_handdraw_yolo.py")
+    print("[GhTimberReader] WAITING: No timber JSON found. Press Button to capture Timber #00 from camera.")
+
+status = " | ".join(status_messages)

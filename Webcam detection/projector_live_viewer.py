@@ -6,6 +6,7 @@ Features:
   - Built-in High-Performance TCP Socket Server (Port 9999) receiving live geometry from Grasshopper
   - Real-time Multi-Color Rendering:
       * Base Timber Contour & Corners
+      * Filled Grasshopper Hand Drawings (Customizable)
       * Cutting Lines (Red / Customizable)
       * Milling / Pocket Toolpaths (Cyan / Blue / Customizable)
       * Drill / Reference Points (Green / Customizable)
@@ -365,6 +366,34 @@ def render_frame(data, is_connected, packet_count, last_time):
     drill_th_px = int(data.get("drill_thickness_px", data.get("point_thickness", DEFAULT_DRILL_THICKNESS_PX)))
     label_scale = float(data.get("label_scale", data.get("text_size", DEFAULT_LABEL_SCALE)))
     label_th_px = int(data.get("label_thickness", DEFAULT_LABEL_THICKNESS))
+
+    # Filled Grasshopper hand drawings, behind all existing outlines and labels.
+    # The sender provides independent closed polygon rings in world XY (mm).
+    if data.get("hand_drawing_fill", True):
+        drawing_bgr = parse_color(
+            data.get("hand_drawing_color"), default_bgr=(255, 255, 255)
+        )
+        drawing_polygons = normalize_to_contour_list(data.get("hand_drawing_geo", []))
+        for polygon in drawing_polygons:
+            try:
+                points_mm = np.asarray(polygon, dtype=np.float32)
+                if (points_mm.ndim != 2 or points_mm.shape[1] != 2
+                        or len(points_mm) < 3 or not np.isfinite(points_mm).all()):
+                    continue
+                pts_px = world_to_projector(
+                    points_mm, offset_x_mm, offset_y_mm, timber_thickness_mm
+                )
+                if len(pts_px) < 3 or not np.isfinite(pts_px).all():
+                    continue
+                rounded = np.round(pts_px).astype(np.float64)
+                if np.any(rounded < -2147483648) or np.any(rounded > 2147483647):
+                    continue
+                pts_int = rounded.astype(np.int32).reshape(-1, 1, 2)
+                # Separate fills keep overlapping polygons solid; no outline pass.
+                cv2.fillPoly(canvas, [pts_int], drawing_bgr, lineType=cv2.LINE_8)
+            except (TypeError, ValueError, OverflowError, cv2.error):
+                # A malformed drawing must not interrupt the existing layers.
+                continue
 
     # 1. Base Timber Contour(s)
     contour_raw = data.get("contour_mm") or data.get("timber_contour") or data.get("main_border") or data.get("timbers")
